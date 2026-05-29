@@ -20,8 +20,7 @@ fleetsh [alias] [flags]
 | `--command` | `-c` | | Command to run remotely |
 | `--script` | `-s` | | Local script file to execute remotely |
 | `--user` | `-u` | | SSH username override |
-| `--ping` | `-p` | | Ping hosts (default: 10 pings, mutually exclusive with -c/-s) |
-| `--ping-count` | | `10` | Number of pings per host (used with -p) |
+| `--ping` | `-p` | | Ping hosts (default: 3 pings, mutually exclusive with -c/-s) |
 | `--key` | `-k` | | SSH private key path |
 | `--parallel` | `-l` | `1` | Max concurrent hosts (default: sequential) |
 | `--timeout` | `-o` | `30000` | Per-host timeout in milliseconds |
@@ -37,7 +36,7 @@ Exactly one of `--command`, `--script`, or `--ping` must be provided.
 
 | Flag | Constraint |
 |------|------------|
-| `--ping-count` | Must be >= 1 |
+| `--ping` | Must be >= 1 |
 | `--parallel` | Must be >= 1 |
 | `--timeout` | Must be >= 1 |
 | `--inventory` | File must exist if provided |
@@ -45,14 +44,23 @@ Exactly one of `--command`, `--script`, or `--ping` must be provided.
 
 ## Output Format
 
-Lines starting with `*` are output from the remote host:
+Text output uses prefixes to indicate the type of line:
+
+```
+* line                  stdout from remote host
+! line                  stderr from remote host
+| [error] message       error message
+| exit=N duration=...   fleetsh metadata (exit status, duration)
+```
+
+Example:
 ```
 runner-1 * Linux 5.15.0-generic
-runner-1 * CPU: 2 cores, Load: 0.12
+runner-1 ! CPU: 2 cores, Load: 0.12
 runner-1 | exit=0 duration=123ms
 ```
 
-Lines starting with `|` are fleetsh metadata (exit status, summary).
+Lines starting with `*` are stdout from the remote host. Lines starting with `!` are stderr. Lines starting with `|` are fleetsh metadata.
 
 ## Targeting Hosts
 
@@ -82,9 +90,9 @@ fleetsh -g all -s ./maintenance.sh
 Check host connectivity by sending ICMP (if available) or TCP ping:
 
 ```bash
-fleetsh -g all -p                    # ping each host 10 times (default)
-fleetsh -g all -p --ping-count 3     # ping each host 3 times
-fleetsh -g all -p -l 20              # ping with 20 concurrent hosts
+fleetsh -g all -p                    # ping each host 3 times (default)
+fleetsh -g all -p 5                  # ping each host 5 times
+fleetsh -g all --ping 3 -l 20        # ping 3 times with 20 concurrent hosts
 ```
 
 Output:
@@ -113,28 +121,20 @@ fleetsh -g web -c "sudo systemctl restart nginx" --dry-run
 fleetsh -g all -c "uname -a" --json
 ```
 
-Returns:
+Output is NDJSON (newline-delimited JSON) with streaming events. Each line is a separate JSON object:
 
 ```json
-{
-  "results": [
-    {
-      "host": "runner-1",
-      "group": "all",
-      "success": true,
-      "exit_code": 0,
-      "stdout": "Linux runner-1 5.15.0",
-      "stderr": "",
-      "duration": "123ms"
-    }
-  ],
-  "summary": {
-    "ok": 1,
-    "failed": 0,
-    "total": 1
-  }
-}
+{"source":"host","host":"runner-1","group":"all","type":"stdout","line":"Linux runner-1 5.15.0"}
+{"source":"host","host":"runner-1","group":"all","type":"done","exit_code":0,"duration_ms":123}
+{"source":"fleetsh","type":"summary","ok":1,"failed":0,"total":1,"duration_ms":150}
 ```
+
+Event types:
+- `stdout` - stdout line from remote host
+- `stderr` - stderr line from remote host
+- `error` - error message
+- `done` - host completed with exit_code and duration_ms
+- `summary` - final summary with ok/failed/total counts
 
 ## Fail Fast
 
@@ -216,6 +216,8 @@ Rules:
 - Aliases must be unique — duplicate aliases produce an error
 - Group references must exist — referencing an undefined alias produces an error
 - `[all]` is not automatic — define it explicitly if you want `fleetsh -g all` to work
+- `summary` is a reserved word — cannot be used as an alias or group name
+- If an alias and group have the same name, the alias takes priority when resolving
 
 ### Comments
 

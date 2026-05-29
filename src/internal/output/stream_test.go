@@ -66,7 +66,7 @@ func TestStreamTextStderr(t *testing.T) {
 
 	output := buf.String()
 	assert.Contains(t, output, "db01")
-	assert.Contains(t, output, "* [stderr] connection refused")
+	assert.Contains(t, output, "! connection refused")
 	assert.Contains(t, output, "| exit=1 duration=50ms")
 	assert.Contains(t, output, "summary")
 	assert.Contains(t, output, "| ok=0 failed=1 total=1")
