@@ -4,7 +4,7 @@ Run shell commands or scripts across a fleet of servers over SSH, or ping hosts 
 
 ## Prerequisites
 
-- OpenSSH client (`ssh`) must be installed and on your `PATH`
+- OpenSSH client (`ssh` and `scp`) must be installed and on your `PATH`
 - SSH key-based or agent-based authentication (no password prompt support)
 
 ## Usage
@@ -15,20 +15,18 @@ fleetsh [alias] [flags]
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
-| `--inventory` | `-i` | `.fleetsh`, then `~/.fleetsh` | Inventory file path |
 | `--group` | `-g` | | Group to target |
-| `--command` | `-c` | | Command to run remotely |
-| `--script` | `-s` | | Local script file to execute remotely |
-| `--user` | `-u` | | SSH username override |
-| `--ping` | `-p` | | Ping hosts (default: 3 pings, mutually exclusive with -c/-s) |
-| `--key` | `-k` | | SSH private key path |
+| `--inventory` | `-i` | `.fleetsh`, then `~/.fleetsh` | Inventory file path |
+| `--command` | `-c` | | Command to run remotely (mutually exclusive with -s, -p) |
+| `--script` | `-s` | | Local script file to execute remotely (mutually exclusive with -c, -p) |
+| `--timeout` | `-t` | `30000` | Per-host timeout in milliseconds |
 | `--parallel` | `-l` | `1` | Max concurrent hosts (default: sequential) |
-| `--timeout` | `-o` | `30000` | Per-host timeout in milliseconds |
-| `--dry-run` | | | Print what would run without connecting |
 | `--json` | | | Output JSON |
 | `--fail-fast` | | | Stop scheduling new hosts after first failure |
-| `--insecure` | | | Skip host key verification |
-| `--tty` | `-t` | | Allocate a pseudo-terminal (needed for sudo) |
+| `--dry-run` | | | Print what would run without connecting |
+| `--ping` | `-p` | | Ping hosts (default: 3) (mutually exclusive with -c, -s) |
+| `--help` | | | Help for fleetsh |
+| `--version` | `-v` | | Version for fleetsh |
 
 Exactly one of `--command`, `--script`, or `--ping` must be provided.
 
@@ -40,27 +38,26 @@ Exactly one of `--command`, `--script`, or `--ping` must be provided.
 | `--parallel` | Must be >= 1 |
 | `--timeout` | Must be >= 1 |
 | `--inventory` | File must exist if provided |
-| `--key` | File must exist if provided |
 
 ## Output Format
 
 Text output uses prefixes to indicate the type of line:
 
 ```
-* line                  stdout from remote host
-! line                  stderr from remote host
-| [error] message       error message
-| exit=N duration=...   fleetsh metadata (exit status, duration)
+host | line             stdout from remote host
+host ! line             stderr from remote host
+host | message          error message
+host | OK exit=N ...    fleetsh metadata (exit status, duration)
 ```
 
 Example:
 ```
-runner-1 * Linux 5.15.0-generic
+runner-1 | Linux 5.15.0-generic
 runner-1 ! CPU: 2 cores, Load: 0.12
-runner-1 | exit=0 duration=123ms
+runner-1 | OK exit=0 duration=123ms
 ```
 
-Lines starting with `*` are stdout from the remote host. Lines starting with `!` are stderr. Lines starting with `|` are fleetsh metadata.
+Lines with `|` are stdout from the remote host. Lines with `!` are stderr or errors. Lines with `OK` or `FAILED` are fleetsh metadata.
 
 ## Targeting Hosts
 
@@ -124,16 +121,19 @@ fleetsh -g all -c "uname -a" --json
 Output is NDJSON (newline-delimited JSON) with streaming events. Each line is a separate JSON object:
 
 ```json
+{"source":"fleetsh","type":"info","message":"fleetsh v0.0.1"}
 {"source":"host","host":"runner-1","group":"all","type":"stdout","line":"Linux runner-1 5.15.0"}
 {"source":"host","host":"runner-1","group":"all","type":"done","exit_code":0,"duration_ms":123}
 {"source":"fleetsh","type":"summary","ok":1,"failed":0,"total":1,"duration_ms":150}
 ```
 
 Event types:
+- `info` - version info message
 - `stdout` - stdout line from remote host
 - `stderr` - stderr line from remote host
 - `error` - error message
 - `done` - host completed with exit_code and duration_ms
+- `warning` - warning message
 - `summary` - final summary with ok/failed/total counts
 
 ## Fail Fast
@@ -152,9 +152,9 @@ Use a `.fleetsh` inventory file in the current directory or your home directory.
 
 ```ini
 # hosts
-runner-1 administrator@runner-1.domain
-runner-2 administrator@runner-2.domain
-runner-3 administrator@runner-3.domain
+runner-1 administrator@runner-1.domain -i /path/to/key.pem -o ServerAliveInterval=60
+runner-2 administrator@runner-2.domain -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+runner-3 administrator@runner-3.domain -tt
 runner-4 administrator@runner-4.domain
 
 [all]
@@ -187,7 +187,7 @@ Username is optional. If not defined, uses current user.
 Lines before any `[group]` header define the host registry. Each host is defined once:
 
 ```
-alias [user@]hostname[:port]
+alias [user@]hostname[:port] [ssh args...]
 ```
 
 | Format | Example |
@@ -196,6 +196,7 @@ alias [user@]hostname[:port]
 | Alias + user + host + port | `db1 postgres@db1.example.cx:5432` |
 | Alias + host (no user) | `web01 web01.example.com` |
 | Alias + host + port (no user) | `web01 web01.example.com:2222` |
+| Alias + user + host + SSH args | `runner-1 admin@runner-1.address.cx -i key.pem -o ServerAliveInterval=60` |
 | Alias only | `localhost` |
 
 When user is omitted, the current system user is used.
@@ -223,10 +224,6 @@ Rules:
 
 Lines starting with `#` or `;` are ignored.
 
-### Priority
-
-CLI flag > host definition > default.
-
 ## Exit Codes
 
 | Code | Meaning |
@@ -238,8 +235,7 @@ CLI flag > host definition > default.
 ## Security
 
 - Host key verification is **enabled by default** using `~/.ssh/known_hosts`
-- `--insecure` skips verification but prints a loud warning
-- No silent host key bypass
+- To disable verification, use `-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null` in the inventory entry
 - SSH agent authentication is used automatically if `SSH_AUTH_SOCK` is set
 - No password prompt support (use SSH keys or agent)
 

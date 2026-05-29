@@ -176,6 +176,7 @@ func BuildTasks(hosts []*inventory.ResolvedHost, command string, script []byte, 
 			Hostname: rh.Host.Name,
 			Port:     rh.Host.Port,
 			Username: username,
+			SSHArgs:  rh.Host.SSHArgs,
 		}
 
 		tasks[i] = Task{
@@ -186,46 +187,6 @@ func BuildTasks(hosts []*inventory.ResolvedHost, command string, script []byte, 
 			Timeout:    timeout,
 			IsScript:   isScript,
 		}
-	}
-	return tasks
-}
-
-func ApplyUserOverride(tasks []Task, user string) []Task {
-	if user == "" {
-		return tasks
-	}
-	for i := range tasks {
-		tasks[i].HostConfig.Username = user
-	}
-	return tasks
-}
-
-func ApplyKeyOverride(tasks []Task, key string) []Task {
-	if key == "" {
-		return tasks
-	}
-	for i := range tasks {
-		tasks[i].HostConfig.KeyPath = expandTilde(key)
-	}
-	return tasks
-}
-
-func ApplyInsecure(tasks []Task, insecure bool) []Task {
-	if !insecure {
-		return tasks
-	}
-	for i := range tasks {
-		tasks[i].HostConfig.Insecure = true
-	}
-	return tasks
-}
-
-func ApplyTTY(tasks []Task, tty bool) []Task {
-	if !tty {
-		return tasks
-	}
-	for i := range tasks {
-		tasks[i].HostConfig.TTY = true
 	}
 	return tasks
 }

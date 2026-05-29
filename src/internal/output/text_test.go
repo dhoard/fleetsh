@@ -72,7 +72,7 @@ func TestPrintResultsFailure(t *testing.T) {
 	if !strings.Contains(output, "exit=1") {
 		t.Errorf("expected exit=1 in output, got: %s", output)
 	}
-	if !strings.Contains(output, "db01 | [stderr]") {
+	if !strings.Contains(output, "db01 ! error: connection refused") {
 		t.Errorf("expected stderr prefix in output, got: %s", output)
 	}
 }
@@ -92,7 +92,7 @@ func TestPrintResultsWithError(t *testing.T) {
 	PrintResults(&buf, results)
 
 	output := buf.String()
-	if !strings.Contains(output, "bad | [error]") {
+	if !strings.Contains(output, "bad | connect failed") {
 		t.Errorf("expected error prefix in output, got: %s", output)
 	}
 	if !strings.Contains(output, "connect failed") {

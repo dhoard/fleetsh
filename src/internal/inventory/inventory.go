@@ -17,10 +17,11 @@ package inventory
 import "fmt"
 
 type Host struct {
-	Name  string
-	Alias string
-	User  string
-	Port  int
+	Name     string
+	Alias    string
+	User     string
+	Port     int
+	SSHArgs  []string
 }
 
 func (h *Host) DisplayName() string {

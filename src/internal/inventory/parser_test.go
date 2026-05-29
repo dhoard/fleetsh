@@ -38,6 +38,77 @@ func TestParseHostWithUser(t *testing.T) {
 	assert.Equal(t, "administrator", h.User)
 	assert.Equal(t, "runner-1.address.cx", h.Name)
 	assert.Equal(t, 0, h.Port)
+	assert.Empty(t, h.SSHArgs)
+}
+
+func TestParseHostWithSSHArgs(t *testing.T) {
+	content := `runner-1 administrator@runner-1.address.cx -i /path/to/key.pem -o ServerAliveInterval=60
+`
+	path := writeTempInventory(t, content)
+	defer os.Remove(path)
+
+	inv, err := Parse(path)
+	require.NoError(t, err)
+
+	h := inv.Aliases["runner-1"]
+	assert.Equal(t, "administrator", h.User)
+	assert.Equal(t, "runner-1.address.cx", h.Name)
+	assert.Equal(t, []string{"-i", "/path/to/key.pem", "-o", "ServerAliveInterval=60"}, h.SSHArgs)
+}
+
+func TestParseHostWithSSHArgsIncludingTTY(t *testing.T) {
+	content := `runner-1 administrator@runner-1.address.cx -tt
+`
+	path := writeTempInventory(t, content)
+	defer os.Remove(path)
+
+	inv, err := Parse(path)
+	require.NoError(t, err)
+
+	h := inv.Aliases["runner-1"]
+	assert.Equal(t, []string{"-tt"}, h.SSHArgs)
+}
+
+func TestParseHostWithQuotedSSHArgs(t *testing.T) {
+	content := `runner-1 administrator@runner-1.address.cx -o "ServerAliveInterval=60" -o "StrictHostKeyChecking=no"
+`
+	path := writeTempInventory(t, content)
+	defer os.Remove(path)
+
+	inv, err := Parse(path)
+	require.NoError(t, err)
+
+	h := inv.Aliases["runner-1"]
+	assert.Equal(t, []string{"-o", "ServerAliveInterval=60", "-o", "StrictHostKeyChecking=no"}, h.SSHArgs)
+}
+
+func TestParseHostWithSingleQuotedSSHArgs(t *testing.T) {
+	content := `runner-1 administrator@runner-1.address.cx -o 'ServerAliveInterval=60'
+`
+	path := writeTempInventory(t, content)
+	defer os.Remove(path)
+
+	inv, err := Parse(path)
+	require.NoError(t, err)
+
+	h := inv.Aliases["runner-1"]
+	assert.Equal(t, []string{"-o", "ServerAliveInterval=60"}, h.SSHArgs)
+}
+
+func TestParseHostWithPortAndSSHArgs(t *testing.T) {
+	content := `web01 admin@web01.example.com:2222 -i /path/to/key.pem
+`
+	path := writeTempInventory(t, content)
+	defer os.Remove(path)
+
+	inv, err := Parse(path)
+	require.NoError(t, err)
+
+	h := inv.Aliases["web01"]
+	assert.Equal(t, "admin", h.User)
+	assert.Equal(t, "web01.example.com", h.Name)
+	assert.Equal(t, 2222, h.Port)
+	assert.Equal(t, []string{"-i", "/path/to/key.pem"}, h.SSHArgs)
 }
 
 func TestParseHostWithoutUser(t *testing.T) {

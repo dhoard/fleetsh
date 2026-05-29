@@ -32,9 +32,7 @@ type HostConfig struct {
 	Hostname string
 	Port     int
 	Username string
-	KeyPath  string
-	Insecure bool
-	TTY      bool
+	SSHArgs  []string
 }
 
 func sshArgs(hc HostConfig) []string {
@@ -42,18 +40,6 @@ func sshArgs(hc HostConfig) []string {
 
 	if hc.Port != 0 {
 		args = append(args, "-p", fmt.Sprintf("%d", hc.Port))
-	}
-
-	if hc.KeyPath != "" {
-		args = append(args, "-i", hc.KeyPath)
-	}
-
-	if hc.Insecure {
-		args = append(args, "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null")
-	}
-
-	if hc.TTY {
-		args = append(args, "-t")
 	}
 
 	args = append(args, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10")
@@ -64,6 +50,9 @@ func sshArgs(hc HostConfig) []string {
 	}
 
 	args = append(args, target)
+
+	args = append(args, hc.SSHArgs...)
+
 	return args
 }
 
@@ -74,18 +63,13 @@ func scpArgs(hc HostConfig, remotePath string) []string {
 		args = append(args, "-P", fmt.Sprintf("%d", hc.Port))
 	}
 
-	if hc.KeyPath != "" {
-		args = append(args, "-i", hc.KeyPath)
-	}
-
-	if hc.Insecure {
-		args = append(args, "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null")
-	}
-
 	args = append(args, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10")
 
 	target := hc.Username + "@" + hc.Hostname + ":" + remotePath
 	args = append(args, target)
+
+	args = append(args, hc.SSHArgs...)
+
 	return args
 }
 
@@ -292,8 +276,8 @@ func FormatDryRun(hc HostConfig, mode string, content string) string {
 	if hc.Port != 0 {
 		sb.WriteString(fmt.Sprintf("  Port: %d\n", hc.Port))
 	}
-	if hc.KeyPath != "" {
-		sb.WriteString(fmt.Sprintf("  Key: %s\n", hc.KeyPath))
+	if len(hc.SSHArgs) > 0 {
+		sb.WriteString(fmt.Sprintf("  SSH Args: %s\n", strings.Join(hc.SSHArgs, " ")))
 	}
 	if mode == "command" {
 		sb.WriteString(fmt.Sprintf("  Command: %s\n", content))
@@ -301,15 +285,4 @@ func FormatDryRun(hc HostConfig, mode string, content string) string {
 		sb.WriteString("  Mode: script\n")
 	}
 	return sb.String()
-}
-
-func expandTilde(path string) string {
-	if strings.HasPrefix(path, "~/") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return path
-		}
-		return home + "/" + path[2:]
-	}
-	return path
 }
