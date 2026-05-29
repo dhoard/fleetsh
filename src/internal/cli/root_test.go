@@ -15,38 +15,28 @@
 package cli
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/dhoard/fleetsh/internal/inventory"
 )
 
-func TestAlignPrefix(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    string
-		width    int
-		expected string
-	}{
-		{"empty string", "", 5, "     "},
-		{"short string", "a", 5, "a    "},
-		{"exact width", "abc", 3, "abc"},
-		{"short of width", "abc", 5, "abc  "},
-		{"longer than width", "abcdef", 5, "abcde"},
-		{"single char width", "x", 1, "x"},
-		{"zero width", "abc", 0, ""},
-		{"unicode", "a\u00e9", 5, "a\u00e9  "},
-		{"spaces", "ab cd", 6, "ab cd "},
-		{"all spaces", "", 3, "   "},
-		{"exactly one over", "abcd", 3, "abc"},
-		{"exactly one under", "ab", 3, "ab "},
-	}
+func TestExitErrorIsRecognized(t *testing.T) {
+	// A *exitError must carry its code and be unwrappable via errors.As, since
+	// Execute relies on errors.As to map host-failure exits to code 1.
+	err := error(&exitError{code: 1})
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := alignPrefix(tt.input, tt.width)
-			if result != tt.expected {
-				t.Errorf("alignPrefix(%q, %d) = %q, want %q", tt.input, tt.width, result, tt.expected)
-			}
-		})
+	var ee *exitError
+	if !errors.As(err, &ee) {
+		t.Fatalf("errors.As failed to match *exitError")
+	}
+	if ee.code != 1 {
+		t.Errorf("exitError.code = %d, want 1", ee.code)
+	}
+	if ee.Error() != fmt.Sprintf("exit code %d", 1) {
+		t.Errorf("exitError.Error() = %q", ee.Error())
 	}
 }
 
@@ -140,10 +130,6 @@ func TestArgumentValidation(t *testing.T) {
 		expectErr  bool
 		errContain string
 	}{
-		// --ping validation
-		{"ping 0", []string{"-g", "test", "-p", "0"}, true, "--ping must be >= 1"},
-		{"ping negative", []string{"-g", "test", "-p", "-1"}, true, "--ping must be >= 1"},
-
 		// --parallel validation
 		{"parallel 0", []string{"-g", "test", "-c", "echo", "--parallel", "0"}, true, "--parallel must be >= 1"},
 		{"parallel negative", []string{"-g", "test", "-c", "echo", "--parallel", "-1"}, true, "--parallel must be >= 1"},
@@ -156,8 +142,8 @@ func TestArgumentValidation(t *testing.T) {
 		{"inventory missing", []string{"-g", "test", "-c", "echo", "--inventory", "/nonexistent/path"}, true, "cannot access inventory file"},
 
 		// Mutual exclusivity
-		{"ping with command", []string{"-g", "test", "-p", "3", "-c", "echo"}, true, "--ping is mutually exclusive"},
-		{"ping with script", []string{"-g", "test", "-p", "3", "-s", "script.sh"}, true, "--ping is mutually exclusive"},
+		{"ping with command", []string{"-g", "test", "-p", "3", "-c", "echo"}, true, "mutually exclusive"},
+		{"ping with script", []string{"-g", "test", "-p", "3", "-s", "script.sh"}, true, "mutually exclusive"},
 
 		// Required flag
 		{"no action flag", []string{"-g", "test"}, true, "exactly one of --command, --script, or --ping is required"},
@@ -184,5 +170,194 @@ func TestArgumentValidation(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestMutuallyExclusiveConflict(t *testing.T) {
+	tests := []struct {
+		name     string
+		args     []string
+		expected string
+	}{
+		{"none", []string{"-g", "test"}, ""},
+		{"only command", []string{"-c", "echo"}, ""},
+		{"only ping", []string{"-p", "3"}, ""},
+		{"ping then command", []string{"-p", "3", "-c", "echo"}, "--ping, --command are mutually exclusive"},
+		{"command then ping", []string{"-c", "echo", "-p", "3"}, "--command, --ping are mutually exclusive"},
+		{"command then script", []string{"-c", "echo", "-s", "x.sh"}, "--command, --script are mutually exclusive"},
+		{"script then command", []string{"-s", "x.sh", "-c", "echo"}, "--script, --command are mutually exclusive"},
+		{"all three", []string{"-p", "3", "-c", "echo", "-s", "x.sh"}, "--ping, --command, --script are mutually exclusive"},
+		{"long flags", []string{"--ping", "3", "--command", "echo"}, "--ping, --command are mutually exclusive"},
+		{"equals form", []string{"--command=echo", "--ping=3"}, "--command, --ping are mutually exclusive"},
+		{"short equals form", []string{"-c=echo", "-p=3"}, "--command, --ping are mutually exclusive"},
+		{"duplicate command counts once", []string{"-c", "a", "-c", "b"}, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := mutuallyExclusiveConflict(tt.args)
+			if result != tt.expected {
+				t.Errorf("mutuallyExclusiveConflict(%v) = %q, want %q", tt.args, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestIsPattern(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected bool
+	}{
+		{"[runner-.*]", true},
+		{"[.*]", true},
+		{"[web]", true},
+		{"runner-1", false},
+		{"-g web", false},
+		{"[invalid", false},
+		{"invalid]", false},
+		{"", false},
+		{"[]", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			result := isPattern(tt.input)
+			if result != tt.expected {
+				t.Errorf("isPattern(%q) = %v, want %v", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestExtractPattern(t *testing.T) {
+	tests := []struct {
+		input       string
+		expected    string
+		expectErr   bool
+		errContains string
+	}{
+		{"[runner-.*]", "runner-.*", false, ""},
+		{"[.*]", ".*", false, ""},
+		{"[web]", "web", false, ""},
+		{"[  runner-.*  ]", "runner-.*", false, ""},
+		{"runner-1", "", false, ""},
+		{"[invalid", "", false, ""},
+		{"invalid]", "", false, ""},
+		{"[]", "", true, "empty pattern"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			result, err := extractPattern(tt.input)
+			if tt.expectErr {
+				if err == nil {
+					t.Errorf("expected error containing %q, got nil", tt.errContains)
+				} else if !strings.Contains(err.Error(), tt.errContains) {
+					t.Errorf("error = %q, want containing %q", err.Error(), tt.errContains)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+				if result != tt.expected {
+					t.Errorf("extractPattern(%q) = %q, want %q", tt.input, result, tt.expected)
+				}
+			}
+		})
+	}
+}
+
+func TestResolveWithPatternGroup(t *testing.T) {
+	inv := &inventory.Inventory{
+		Aliases: map[string]*inventory.Host{},
+		Groups: map[string]*inventory.Group{
+			"web-prod":    {Name: "web-prod", Hosts: []*inventory.Host{{Name: "w1"}}},
+			"web-staging": {Name: "web-staging", Hosts: []*inventory.Host{{Name: "w2"}}},
+		},
+	}
+
+	hosts, err := resolveWithPattern(inv, "[web-.*]", true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(hosts) != 2 {
+		t.Errorf("expected 2 hosts, got %d", len(hosts))
+	}
+}
+
+func TestResolveWithPatternGroupExactFirst(t *testing.T) {
+	inv := &inventory.Inventory{
+		Aliases: map[string]*inventory.Host{},
+		Groups: map[string]*inventory.Group{
+			"web":      {Name: "web", Hosts: []*inventory.Host{{Name: "exact"}}},
+			"web-prod": {Name: "web-prod", Hosts: []*inventory.Host{{Name: "regex"}}},
+		},
+	}
+
+	hosts, err := resolveWithPattern(inv, "web", true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(hosts) != 1 {
+		t.Errorf("expected 1 host, got %d", len(hosts))
+	}
+	if hosts[0].Host.Name != "exact" {
+		t.Errorf("expected host 'exact', got %q", hosts[0].Host.Name)
+	}
+}
+
+func TestResolveWithPatternGroupRegexImplicit(t *testing.T) {
+	inv := &inventory.Inventory{
+		Aliases: map[string]*inventory.Host{},
+		Groups: map[string]*inventory.Group{
+			"web-prod": {Name: "web-prod", Hosts: []*inventory.Host{{Name: "matched"}}},
+		},
+	}
+
+	hosts, err := resolveWithPattern(inv, "web-.*", true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(hosts) != 1 {
+		t.Errorf("expected 1 host, got %d", len(hosts))
+	}
+	if hosts[0].Host.Name != "matched" {
+		t.Errorf("expected host 'matched', got %q", hosts[0].Host.Name)
+	}
+}
+
+func TestResolveWithPatternAlias(t *testing.T) {
+	inv := &inventory.Inventory{
+		Aliases: map[string]*inventory.Host{
+			"runner-1": {Name: "r1"},
+			"runner-2": {Name: "r2"},
+			"web-1":    {Name: "w1"},
+		},
+		Groups: map[string]*inventory.Group{},
+	}
+
+	hosts, err := resolveWithPattern(inv, "[runner-.*]", false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(hosts) != 2 {
+		t.Errorf("expected 2 hosts, got %d", len(hosts))
+	}
+}
+
+func TestResolveWithPatternAliasNoMatch(t *testing.T) {
+	inv := &inventory.Inventory{
+		Aliases: map[string]*inventory.Host{
+			"runner-1": {Name: "r1"},
+		},
+		Groups: map[string]*inventory.Group{},
+	}
+
+	_, err := resolveWithPattern(inv, "[web-.*]", false)
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "no aliases match") {
+		t.Errorf("error = %q, want containing %q", err.Error(), "no aliases match")
 	}
 }

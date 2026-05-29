@@ -56,6 +56,21 @@ func TestParseHostWithSSHArgs(t *testing.T) {
 	assert.Equal(t, []string{"-i", "/path/to/key.pem", "-o", "ServerAliveInterval=60"}, h.SSHArgs)
 }
 
+func TestParseHostWithMultibyteSSHArg(t *testing.T) {
+	// SSH args may contain non-ASCII (multibyte UTF-8) values, e.g. a path or
+	// option value. parseSSHArgs must preserve runes intact rather than
+	// splitting them into individual bytes.
+	content := "runner-1 administrator@runner-1.address.cx -o ProxyCommand=café-proxy\n"
+	path := writeTempInventory(t, content)
+	defer os.Remove(path)
+
+	inv, err := Parse(path)
+	require.NoError(t, err)
+
+	h := inv.Aliases["runner-1"]
+	assert.Equal(t, []string{"-o", "ProxyCommand=café-proxy"}, h.SSHArgs)
+}
+
 func TestParseHostWithSSHArgsIncludingTTY(t *testing.T) {
 	content := `runner-1 administrator@runner-1.address.cx -tt
 `
@@ -324,6 +339,58 @@ runner-1
 	_, err := Parse(path)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "reserved group")
+}
+
+func TestParseInvalidAliasName(t *testing.T) {
+	content := `"my host" user@host.example.com
+`
+	path := writeTempInventory(t, content)
+	defer os.Remove(path)
+
+	_, err := Parse(path)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid alias")
+	assert.Contains(t, err.Error(), "must match")
+}
+
+func TestParseInvalidGroupName(t *testing.T) {
+	content := `runner-1 user@host.example.com
+
+[my group]
+runner-1
+`
+	path := writeTempInventory(t, content)
+	defer os.Remove(path)
+
+	_, err := Parse(path)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid group name")
+	assert.Contains(t, err.Error(), "must match")
+}
+
+func TestParseAliasWithRegexChars(t *testing.T) {
+	content := `"web.*" user@host.example.com
+`
+	path := writeTempInventory(t, content)
+	defer os.Remove(path)
+
+	_, err := Parse(path)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid alias")
+}
+
+func TestParseInvalidAliasInGroup(t *testing.T) {
+	content := `runner-1 user@host.example.com
+
+[web]
+runner!1
+`
+	path := writeTempInventory(t, content)
+	defer os.Remove(path)
+
+	_, err := Parse(path)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid alias")
 }
 
 func writeTempInventory(t *testing.T, content string) string {

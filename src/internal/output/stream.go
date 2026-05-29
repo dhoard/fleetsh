@@ -25,11 +25,14 @@ import (
 	"github.com/dhoard/fleetsh/internal/sshrun"
 )
 
+// alignPrefix pads or truncates s to exactly width display columns, counting by
+// runes so multibyte UTF-8 characters are never split mid-rune.
 func alignPrefix(s string, width int) string {
-	if len(s) >= width {
-		return s[:width]
+	runes := []rune(s)
+	if len(runes) >= width {
+		return string(runes[:width])
 	}
-	return s + strings.Repeat(" ", width-len(s))
+	return s + strings.Repeat(" ", width-len(runes))
 }
 
 func StreamText(w io.Writer, version string, warning string, events <-chan sshrun.StreamEvent, maxLen int, start time.Time) []*sshrun.Result {
@@ -70,7 +73,7 @@ func StreamText(w io.Writer, version string, warning string, events <-chan sshru
 				fmt.Fprintf(w, "%s | exit=%d duration=%s\n", alignPrefix(ev.Host, maxLen), ev.ExitCode, formatDuration(ev.Duration))
 			}
 		} else if ev.Error != "" {
-			fmt.Fprintf(w, "%s | [error] %s\n", alignPrefix(ev.Host, maxLen), ev.Error)
+			fmt.Fprintf(w, "%s ! %s\n", alignPrefix(ev.Host, maxLen), ev.Error)
 		} else if ev.Stderr {
 			fmt.Fprintf(w, "%s ! %s\n", alignPrefix(ev.Host, maxLen), ev.Line)
 			current.Stderr += ev.Line + "\n"

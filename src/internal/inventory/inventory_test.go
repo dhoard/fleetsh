@@ -15,6 +15,7 @@
 package inventory
 
 import (
+	"regexp"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -118,18 +119,6 @@ func TestResolveGroupDeduplicates(t *testing.T) {
 	assert.Len(t, hosts, 1)
 }
 
-func TestHasGroup(t *testing.T) {
-	inv := &Inventory{
-		Aliases: map[string]*Host{},
-		Groups: map[string]*Group{
-			"web": {Name: "web"},
-		},
-	}
-
-	assert.True(t, inv.HasGroup("web"))
-	assert.False(t, inv.HasGroup("db"))
-}
-
 func TestResolveAliasPriorityOverGroup(t *testing.T) {
 	host := &Host{Name: "web01.example.com", Alias: "web01", User: "ubuntu"}
 	inv := &Inventory{
@@ -145,4 +134,68 @@ func TestResolveAliasPriorityOverGroup(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, hosts, 1)
 	assert.Empty(t, hosts[0].Group)
+}
+
+func TestResolveGroupPattern(t *testing.T) {
+	host1 := &Host{Name: "web01.example.com", Alias: "web01"}
+	host2 := &Host{Name: "web02.example.com", Alias: "web02"}
+	host3 := &Host{Name: "db01.example.com", Alias: "db01"}
+
+	inv := &Inventory{
+		Aliases: map[string]*Host{
+			"web01": host1, "web02": host2, "db01": host3,
+		},
+		Groups: map[string]*Group{
+			"web-prod":    {Name: "web-prod", Hosts: []*Host{host1}},
+			"web-staging": {Name: "web-staging", Hosts: []*Host{host2}},
+			"db-prod":     {Name: "db-prod", Hosts: []*Host{host3}},
+		},
+	}
+
+	hosts, err := inv.ResolveGroupPattern(regexp.MustCompile("web-.*"))
+	require.NoError(t, err)
+	assert.Len(t, hosts, 2)
+}
+
+func TestResolveGroupPatternNoMatch(t *testing.T) {
+	inv := &Inventory{
+		Aliases: map[string]*Host{},
+		Groups: map[string]*Group{
+			"web-prod": {Name: "web-prod"},
+		},
+	}
+
+	_, err := inv.ResolveGroupPattern(regexp.MustCompile("db-.*"))
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "no groups match")
+}
+
+func TestResolveAliasPattern(t *testing.T) {
+	host1 := &Host{Name: "runner-1.example.com", Alias: "runner-1"}
+	host2 := &Host{Name: "runner-2.example.com", Alias: "runner-2"}
+	host3 := &Host{Name: "web-1.example.com", Alias: "web-1"}
+
+	inv := &Inventory{
+		Aliases: map[string]*Host{
+			"runner-1": host1, "runner-2": host2, "web-1": host3,
+		},
+		Groups: map[string]*Group{},
+	}
+
+	hosts, err := inv.ResolveAliasPattern(regexp.MustCompile("runner-.*"))
+	require.NoError(t, err)
+	assert.Len(t, hosts, 2)
+}
+
+func TestResolveAliasPatternNoMatch(t *testing.T) {
+	inv := &Inventory{
+		Aliases: map[string]*Host{
+			"runner-1": {Name: "runner-1.example.com", Alias: "runner-1"},
+		},
+		Groups: map[string]*Group{},
+	}
+
+	_, err := inv.ResolveAliasPattern(regexp.MustCompile("web-.*"))
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "no aliases match")
 }

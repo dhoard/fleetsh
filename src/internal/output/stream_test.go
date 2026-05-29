@@ -26,6 +26,39 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestAlignPrefix(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		width    int
+		expected string
+	}{
+		{"empty string", "", 5, "     "},
+		{"short string", "a", 5, "a    "},
+		{"exact width", "abc", 3, "abc"},
+		{"short of width", "abc", 5, "abc  "},
+		{"longer than width", "abcdef", 5, "abcde"},
+		{"single char width", "x", 1, "x"},
+		{"zero width", "abc", 0, ""},
+		// Rune-aware: "aé" is 2 runes, padded to width 5 -> 3 spaces.
+		{"unicode pad", "a\u00e9", 5, "a\u00e9   "},
+		// Rune-aware truncation must not split a multibyte rune.
+		{"unicode truncate", "a\u00e9c", 2, "a\u00e9"},
+		{"spaces", "ab cd", 6, "ab cd "},
+		{"exactly one over", "abcd", 3, "abc"},
+		{"exactly one under", "ab", 3, "ab "},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := alignPrefix(tt.input, tt.width)
+			if result != tt.expected {
+				t.Errorf("alignPrefix(%q, %d) = %q, want %q", tt.input, tt.width, result, tt.expected)
+			}
+		})
+	}
+}
+
 func TestStreamTextStdout(t *testing.T) {
 	events := make(chan sshrun.StreamEvent, 10)
 	go func() {
@@ -85,7 +118,7 @@ func TestStreamTextError(t *testing.T) {
 
 	output := buf.String()
 	assert.Contains(t, output, "bad")
-	assert.Contains(t, output, "| [error] timeout")
+	assert.Contains(t, output, "! timeout")
 	assert.Contains(t, output, "| exit=-1")
 	assert.Contains(t, output, "summary")
 	assert.Contains(t, output, "| ok=0 failed=1 total=1")
