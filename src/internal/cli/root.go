@@ -16,10 +16,12 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -49,11 +51,31 @@ var (
 	flagFailFast  bool
 )
 
+// exitError carries a specific process exit code from runE up to Execute,
+// which is the single place that maps errors to os.Exit codes. This keeps the
+// exit-code policy centralized rather than scattering os.Exit calls through the
+// command logic.
+type exitError struct{ code int }
+
+func (e *exitError) Error() string { return fmt.Sprintf("exit code %d", e.code) }
+
+// Execute runs the root command and maps its result to a process exit code:
+//
+//	0 — success
+//	1 — one or more hosts failed (carried via *exitError)
+//	2 — CLI, config, or inventory error (any other non-nil error)
 func Execute() {
 	rootCmd := buildRootCmd()
-	if err := rootCmd.Execute(); err != nil {
-		os.Exit(2)
+	err := rootCmd.Execute()
+	if err == nil {
+		return
 	}
+
+	var ee *exitError
+	if errors.As(err, &ee) {
+		os.Exit(ee.code)
+	}
+	os.Exit(2)
 }
 
 func buildRootCmd() *cobra.Command {
@@ -68,6 +90,20 @@ func buildRootCmd() *cobra.Command {
 
 	cmd.SetVersionTemplate("fleetsh v{{.Version}}\n")
 	cmd.Flags().SortFlags = false
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
+		if strings.Contains(err.Error(), "flag needs an argument") {
+			if conflict := mutuallyExclusiveConflict(os.Args[1:]); conflict != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "Error:\n  %s\n\n", conflict)
+				cmd.Usage()
+				return fmt.Errorf("%s", conflict)
+			}
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "Error:\n  %s\n\n", err.Error())
+		cmd.Usage()
+		return err
+	})
 	cmd.Flags().StringVarP(&flagGroup, "group", "g", "", "group to target")
 	cmd.Flags().StringVarP(&flagInventory, "inventory", "i", "", "inventory file path (default: .fleetsh, then ~/.fleetsh)")
 	cmd.Flags().StringVarP(&flagCommand, "command", "c", "", "command to run remotely (mutually exclusive with -s, -p)")
@@ -85,11 +121,19 @@ func buildRootCmd() *cobra.Command {
 
 func runE(cmd *cobra.Command, args []string) error {
 	errf := func(format string, args ...interface{}) error {
-		return fmt.Errorf("\n  "+format+"\n", args...)
+		msg := fmt.Sprintf(format, args...)
+		fmt.Fprintf(cmd.OutOrStdout(), "Error:\n  %s\n\n", msg)
+		cmd.Usage()
+		return fmt.Errorf("%s", msg)
+	}
+
+	errp := func(err error) error {
+		fmt.Fprintf(cmd.OutOrStdout(), "Error:\n  %s\n", err.Error())
+		return err
 	}
 
 	if len(args) == 0 && flagGroup == "" {
-		if flagCommand == "" && flagScript == "" && flagPing == 0 {
+		if flagCommand == "" && flagScript == "" && !cmd.Flags().Changed("ping") {
 			cmd.Help()
 			return nil
 		}
@@ -103,12 +147,11 @@ func runE(cmd *cobra.Command, args []string) error {
 		return errf("--ping must be >= 1, got %d", flagPing)
 	}
 
-	if flagCommand != "" && flagScript != "" {
-		return errf("--command and --script are mutually exclusive")
-	}
-
-	if flagPing > 0 && (flagCommand != "" || flagScript != "") {
-		return errf("--ping is mutually exclusive with --command and --script")
+	if (flagCommand != "" && flagScript != "") || (flagPing > 0 && (flagCommand != "" || flagScript != "")) {
+		if conflict := mutuallyExclusiveConflict(os.Args[1:]); conflict != "" {
+			return errf("%s", conflict)
+		}
+		return errf("--command, --script, and --ping are mutually exclusive")
 	}
 
 	if flagCommand == "" && flagScript == "" && flagPing == 0 {
@@ -128,11 +171,11 @@ func runE(cmd *cobra.Command, args []string) error {
 	}
 	if flagInventory != "" {
 		if _, err := os.Stat(flagInventory); err != nil {
-			return errf("cannot access inventory file %q: %w", flagInventory, err)
+			return errf("cannot access inventory file %q: %v", flagInventory, err)
 		}
 	}
 
-	if flagPing <= 0 && !flagDryRun {
+	if flagPing == 0 && !flagDryRun {
 		if _, err := exec.LookPath("ssh"); err != nil {
 			return errf("ssh not found: please install OpenSSH client and ensure ssh is on your PATH")
 		}
@@ -148,26 +191,30 @@ func runE(cmd *cobra.Command, args []string) error {
 
 	inv, err := inventory.Parse(inventoryPath)
 	if err != nil {
-		return err
+		return errp(err)
 	}
 
 	target := flagGroup
 	if target == "" {
-		target = args[0]
+		if len(args) > 0 {
+			target = args[0]
+		}
 	}
 
-	hosts, err := inv.Resolve(target)
+	target = strings.TrimSpace(target)
+
+	hosts, err := resolveWithPattern(inv, target, flagGroup != "")
 	if err != nil {
-		return err
+		return errp(err)
 	}
 
 	if len(hosts) == 0 {
-		return fmt.Errorf("no hosts found for target %q", target)
+		return errp(fmt.Errorf("no hosts found for target %q", target))
 	}
 
 	maxLen := 7
 	for _, h := range hosts {
-		nameLen := len(h.Host.DisplayName())
+		nameLen := len([]rune(h.Host.DisplayName()))
 		if nameLen > maxLen {
 			maxLen = nameLen
 		}
@@ -184,7 +231,7 @@ func runE(cmd *cobra.Command, args []string) error {
 		isScript = true
 		scriptContent, err = os.ReadFile(flagScript)
 		if err != nil {
-			return fmt.Errorf("cannot read script file %q: %w", flagScript, err)
+			return errp(fmt.Errorf("cannot read script file %q: %w", flagScript, err))
 		}
 	}
 
@@ -193,7 +240,9 @@ func runE(cmd *cobra.Command, args []string) error {
 	start := time.Now()
 
 	if flagPing > 0 {
-		events := sshrun.PingHosts(hosts, pingCount, flagParallel, flagFailFast)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(flagTimeout)*time.Millisecond)
+		defer cancel()
+		events := sshrun.PingHosts(ctx, hosts, pingCount, flagParallel, flagFailFast)
 		var results []*sshrun.Result
 		if flagJSON {
 			results = output.StreamJSON(os.Stdout, versionMsg, warningMsg, events, start)
@@ -202,7 +251,7 @@ func runE(cmd *cobra.Command, args []string) error {
 		}
 		summary := sshrun.ComputeSummary(results)
 		if summary.Failed > 0 {
-			os.Exit(1)
+			return &exitError{code: 1}
 		}
 		return nil
 	}
@@ -220,17 +269,10 @@ func runE(cmd *cobra.Command, args []string) error {
 	summary := sshrun.ComputeSummary(results)
 
 	if summary.Failed > 0 {
-		os.Exit(1)
+		return &exitError{code: 1}
 	}
 
 	return nil
-}
-
-func alignPrefix(s string, width int) string {
-	if len(s) >= width {
-		return s[:width]
-	}
-	return s + strings.Repeat(" ", width-len(s))
 }
 
 func resolveDefaultInventory() string {
@@ -251,4 +293,96 @@ func resolveDefaultInventory() string {
 	}
 
 	return ".fleetsh"
+}
+
+func isPattern(target string) bool {
+	return strings.HasPrefix(target, "[") && strings.HasSuffix(target, "]")
+}
+
+// mutuallyExclusiveConflict scans the command-line arguments for the mutually
+// exclusive flags --command/-c, --script/-s, and --ping/-p. If two or more are
+// present, it returns an error message listing them in the order they were
+// provided on the command line. Otherwise it returns an empty string.
+func mutuallyExclusiveConflict(args []string) string {
+	type flagName struct {
+		long  string
+		short string
+		name  string
+	}
+	exclusive := []flagName{
+		{"--command", "-c", "--command"},
+		{"--script", "-s", "--script"},
+		{"--ping", "-p", "--ping"},
+	}
+
+	var seen []string
+	for _, arg := range args {
+		for _, f := range exclusive {
+			if arg == f.long || arg == f.short ||
+				strings.HasPrefix(arg, f.long+"=") || strings.HasPrefix(arg, f.short+"=") {
+				already := false
+				for _, s := range seen {
+					if s == f.name {
+						already = true
+						break
+					}
+				}
+				if !already {
+					seen = append(seen, f.name)
+				}
+			}
+		}
+	}
+
+	if len(seen) < 2 {
+		return ""
+	}
+
+	return strings.Join(seen, ", ") + " are mutually exclusive"
+}
+
+func extractPattern(target string) (string, error) {
+	if !isPattern(target) {
+		return "", nil
+	}
+	inner := strings.TrimSpace(target[1 : len(target)-1])
+	if inner == "" {
+		return "", fmt.Errorf("empty pattern")
+	}
+	return inner, nil
+}
+
+func resolveWithPattern(inv *inventory.Inventory, target string, isGroupFlag bool) ([]*inventory.ResolvedHost, error) {
+	patternStr, err := extractPattern(target)
+	if err != nil {
+		return nil, err
+	}
+
+	if patternStr != "" {
+		re, err := regexp.Compile(patternStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid pattern %q: %w", patternStr, err)
+		}
+		if isGroupFlag {
+			return inv.ResolveGroupPattern(re)
+		}
+		return inv.ResolveAliasPattern(re)
+	}
+
+	hosts, err := inv.Resolve(target)
+	if err == nil && len(hosts) > 0 {
+		return hosts, nil
+	}
+
+	if isGroupFlag {
+		re, reErr := regexp.Compile(target)
+		if reErr == nil {
+			hosts, err = inv.ResolveGroupPattern(re)
+			if err == nil {
+				return hosts, nil
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("no hosts found for target %q", target)
 }

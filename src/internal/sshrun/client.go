@@ -35,6 +35,16 @@ type HostConfig struct {
 	SSHArgs  []string
 }
 
+// maxScanLineSize bounds a single line of remote stdout/stderr. The default
+// bufio.Scanner limit is 64KB, which silently truncates long lines (e.g. base64
+// blobs or minified output); raise it so realistic output is captured intact.
+const maxScanLineSize = 1024 * 1024
+
+// sshArgs builds the argument list for the ssh client. All client options
+// (port, connection options, and inventory-supplied SSH args) must precede the
+// destination, because ssh treats the first non-option argument as the
+// destination and everything after it as the remote command. The caller is
+// responsible for appending the single remote-command argument last.
 func sshArgs(hc HostConfig) []string {
 	var args []string
 
@@ -44,6 +54,9 @@ func sshArgs(hc HostConfig) []string {
 
 	args = append(args, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10")
 
+	// Inventory-supplied SSH options must come before the destination.
+	args = append(args, hc.SSHArgs...)
+
 	target := hc.Hostname
 	if hc.Username != "" {
 		target = hc.Username + "@" + hc.Hostname
@@ -51,12 +64,13 @@ func sshArgs(hc HostConfig) []string {
 
 	args = append(args, target)
 
-	args = append(args, hc.SSHArgs...)
-
 	return args
 }
 
-func scpArgs(hc HostConfig, remotePath string) []string {
+// scpArgs builds the argument list for scp to copy a local file to remotePath
+// on the host. Options (port, connection options, inventory SSH args) come
+// first, then the local source path, then the remote destination last.
+func scpArgs(hc HostConfig, localPath, remotePath string) []string {
 	var args []string
 
 	if hc.Port != 0 {
@@ -65,10 +79,16 @@ func scpArgs(hc HostConfig, remotePath string) []string {
 
 	args = append(args, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10")
 
-	target := hc.Username + "@" + hc.Hostname + ":" + remotePath
-	args = append(args, target)
-
+	// Inventory-supplied SSH options must come before the source/destination.
 	args = append(args, hc.SSHArgs...)
+
+	host := hc.Hostname
+	if hc.Username != "" {
+		host = hc.Username + "@" + hc.Hostname
+	}
+	target := host + ":" + remotePath
+
+	args = append(args, localPath, target)
 
 	return args
 }
@@ -80,11 +100,30 @@ func hostDisplayName(hc HostConfig) string {
 	return hc.Hostname
 }
 
-func escapeSingleQuotes(s string) string {
-	return strings.ReplaceAll(s, "'", `'\''`)
+// shellSingleQuote returns s wrapped in single quotes, safe for inclusion in a
+// POSIX shell command. Any embedded single quote is rendered as the standard
+// '\” sequence (close quote, escaped quote, reopen quote).
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-func uploadScript(ctx context.Context, hc HostConfig, content []byte, timeout time.Duration) (string, error) {
+// buildRemoteCommand returns the POSIX sh command that executes the uploaded
+// script at remotePath and removes it afterward, preserving the script's exit
+// status. remotePath is single-quoted everywhere it appears so paths with shell
+// metacharacters are handled safely.
+func buildRemoteCommand(remotePath string) string {
+	q := shellSingleQuote(remotePath)
+	return fmt.Sprintf(
+		"trap 'rm -f %s' EXIT INT TERM; "+
+			"chmod 700 %s && sh %s; "+
+			"_exit=$?; "+
+			"rm -f %s; "+
+			"exit $_exit",
+		q, q, q, q,
+	)
+}
+
+func uploadScript(ctx context.Context, hc HostConfig, content []byte) (string, error) {
 	localPath := ""
 	localFile, err := os.CreateTemp("", "fleetsh-*.tmp")
 	if err != nil {
@@ -113,12 +152,7 @@ func uploadScript(ctx context.Context, hc HostConfig, content []byte, timeout ti
 	uniqueID := filepath.Base(localPath)
 	remotePath := "/tmp/fleetsh-" + uniqueID + ".tmp"
 
-	scpBaseArgs := scpArgs(hc, remotePath)
-	remoteTarget := scpBaseArgs[len(scpBaseArgs)-1]
-	localArgs := append(scpBaseArgs[:len(scpBaseArgs)-1], localPath)
-	localArgs = append(localArgs, remoteTarget)
-
-	cmd := exec.CommandContext(ctx, "scp", localArgs...)
+	cmd := exec.CommandContext(ctx, "scp", scpArgs(hc, localPath, remotePath)...)
 	if err := cmd.Run(); err != nil {
 		return "", fmt.Errorf("scp failed: %w", err)
 	}
@@ -138,23 +172,21 @@ func executeRemoteScript(ctx context.Context, hc HostConfig, content []byte, tim
 		ctx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
 
-		remotePath, err := uploadScript(ctx, hc, content, timeout)
+		remotePath, err := uploadScript(ctx, hc, content)
 		if err != nil {
 			ch <- StreamEvent{Host: displayName, Error: err.Error(), Done: true, ExitCode: -1}
 			return
 		}
 
-		remoteCmd := fmt.Sprintf(
-			"trap 'rm -f %s' EXIT INT TERM; "+
-				"chmod 700 %s && %s; "+
-				"_exit=$?; "+
-				"rm -f %s; "+
-				"exit $_exit",
-			remotePath, remotePath, remotePath, remotePath,
-		)
-
+		// The script has already been uploaded to remotePath. Execute it with
+		// an explicit POSIX sh (the documented remote requirement) and clean up
+		// the temp file afterward. The remote command is passed as a discrete
+		// "sh", "-c", <command> argv triple rather than being pre-wrapped in an
+		// outer `sh -c '...'` string, so we avoid hand-rolled quote escaping.
+		// The only value interpolated into the command is remotePath, which we
+		// control (a /tmp/fleetsh-*.tmp name from os.CreateTemp) and single-quote.
 		args := sshArgs(hc)
-		args = append(args, "sh -c '"+escapeSingleQuotes(remoteCmd)+"'")
+		args = append(args, "sh", "-c", buildRemoteCommand(remotePath))
 
 		cmd := exec.CommandContext(ctx, "ssh", args...)
 
@@ -186,16 +218,24 @@ func streamPipes(cmd *exec.Cmd, ch chan<- StreamEvent, stdoutPipe, stderrPipe io
 	go func() {
 		defer wg.Done()
 		scanner := bufio.NewScanner(stdoutPipe)
+		scanner.Buffer(make([]byte, 0, 64*1024), maxScanLineSize)
 		for scanner.Scan() {
 			ch <- StreamEvent{Host: displayName, Line: scanner.Text()}
+		}
+		if err := scanner.Err(); err != nil {
+			ch <- StreamEvent{Host: displayName, Error: "stdout read error: " + err.Error(), Stderr: true}
 		}
 	}()
 
 	go func() {
 		defer wg.Done()
 		scanner := bufio.NewScanner(stderrPipe)
+		scanner.Buffer(make([]byte, 0, 64*1024), maxScanLineSize)
 		for scanner.Scan() {
 			ch <- StreamEvent{Host: displayName, Line: scanner.Text(), Stderr: true}
+		}
+		if err := scanner.Err(); err != nil {
+			ch <- StreamEvent{Host: displayName, Error: "stderr read error: " + err.Error(), Stderr: true}
 		}
 	}()
 
@@ -228,41 +268,6 @@ func streamPipes(cmd *exec.Cmd, ch chan<- StreamEvent, stdoutPipe, stderrPipe io
 	}
 
 	ch <- event
-}
-
-func RunCommand(ctx context.Context, hc HostConfig, command string, timeout time.Duration) *Result {
-	return collectResult(StreamCommand(ctx, hc, command, timeout))
-}
-
-func RunScript(ctx context.Context, hc HostConfig, scriptContent []byte, timeout time.Duration) *Result {
-	return collectResult(StreamScript(ctx, hc, scriptContent, timeout))
-}
-
-func collectResult(ch <-chan StreamEvent) *Result {
-	result := &Result{}
-	var stdoutBuf, stderrBuf strings.Builder
-
-	for ev := range ch {
-		result.Host = ev.Host
-		if ev.Done {
-			result.Success = ev.Success
-			result.ExitCode = ev.ExitCode
-			result.Error = ev.Error
-			result.Duration = ev.Duration
-		} else if ev.Error != "" {
-			result.Error = ev.Error
-		} else if ev.Stderr {
-			stderrBuf.WriteString(ev.Line)
-			stderrBuf.WriteByte('\n')
-		} else {
-			stdoutBuf.WriteString(ev.Line)
-			stdoutBuf.WriteByte('\n')
-		}
-	}
-
-	result.Stdout = stdoutBuf.String()
-	result.Stderr = stderrBuf.String()
-	return result
 }
 
 func FormatDryRun(hc HostConfig, mode string, content string) string {

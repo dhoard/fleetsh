@@ -14,14 +14,18 @@
 
 package inventory
 
-import "fmt"
+import (
+	"fmt"
+	"regexp"
+	"sort"
+)
 
 type Host struct {
-	Name     string
-	Alias    string
-	User     string
-	Port     int
-	SSHArgs  []string
+	Name    string
+	Alias   string
+	User    string
+	Port    int
+	SSHArgs []string
 }
 
 func (h *Host) DisplayName() string {
@@ -67,7 +71,55 @@ func (inv *Inventory) Resolve(target string) ([]*ResolvedHost, error) {
 	return nil, fmt.Errorf("target %q not found in inventory", target)
 }
 
-func (inv *Inventory) HasGroup(name string) bool {
-	_, ok := inv.Groups[name]
-	return ok
+func (inv *Inventory) ResolveGroupPattern(pattern *regexp.Regexp) ([]*ResolvedHost, error) {
+	var names []string
+	for name := range inv.Groups {
+		if pattern.MatchString(name) {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+
+	var result []*ResolvedHost
+	seen := make(map[string]bool)
+	for _, name := range names {
+		for _, h := range inv.Groups[name].Hosts {
+			key := h.DisplayName()
+			if !seen[key] {
+				seen[key] = true
+				result = append(result, &ResolvedHost{Host: h, Group: name})
+			}
+		}
+	}
+
+	if len(result) == 0 {
+		return nil, fmt.Errorf("no groups match pattern %q", pattern.String())
+	}
+	return result, nil
+}
+
+func (inv *Inventory) ResolveAliasPattern(pattern *regexp.Regexp) ([]*ResolvedHost, error) {
+	var names []string
+	for alias := range inv.Aliases {
+		if pattern.MatchString(alias) {
+			names = append(names, alias)
+		}
+	}
+	sort.Strings(names)
+
+	var result []*ResolvedHost
+	seen := make(map[string]bool)
+	for _, alias := range names {
+		host := inv.Aliases[alias]
+		key := host.DisplayName()
+		if !seen[key] {
+			seen[key] = true
+			result = append(result, &ResolvedHost{Host: host, Group: ""})
+		}
+	}
+
+	if len(result) == 0 {
+		return nil, fmt.Errorf("no aliases match pattern %q", pattern.String())
+	}
+	return result, nil
 }

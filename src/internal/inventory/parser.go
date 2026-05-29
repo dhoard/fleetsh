@@ -18,9 +18,16 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"unicode"
 )
+
+var validNameRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+
+func isValidName(name string) bool {
+	return validNameRegex.MatchString(name)
+}
 
 func Parse(path string) (*Inventory, error) {
 	f, err := os.Open(path)
@@ -49,6 +56,9 @@ func Parse(path string) (*Inventory, error) {
 			inHostSection = false
 			groupName := line[1 : len(line)-1]
 
+			if !isValidName(groupName) {
+				return nil, fmt.Errorf("invalid group name %q: must match [a-zA-Z0-9_-]", groupName)
+			}
 			if groupName == "summary" {
 				return nil, fmt.Errorf("reserved group %q cannot be used in inventory", groupName)
 			}
@@ -63,6 +73,9 @@ func Parse(path string) (*Inventory, error) {
 
 		if inHostSection {
 			host := parseHostDefinition(line)
+			if !isValidName(host.Alias) {
+				return nil, fmt.Errorf("invalid alias %q: must match [a-zA-Z0-9_-]", host.Alias)
+			}
 			if host.Alias == "summary" {
 				return nil, fmt.Errorf("reserved alias %q cannot be used in inventory", host.Alias)
 			}
@@ -72,6 +85,9 @@ func Parse(path string) (*Inventory, error) {
 			inv.Aliases[host.Alias] = host
 		} else {
 			alias := strings.Fields(line)[0]
+			if !isValidName(alias) {
+				return nil, fmt.Errorf("invalid alias %q in group %q: must match [a-zA-Z0-9_-]", alias, currentGroup.Name)
+			}
 			host, ok := inv.Aliases[alias]
 			if !ok {
 				return nil, fmt.Errorf("unknown alias %q referenced in group %q", alias, currentGroup.Name)
@@ -124,9 +140,8 @@ func parseSSHArgs(line string) []string {
 	inQuote := false
 	var quoteChar rune
 
-	for i := 0; i < len(line); i++ {
-		c := rune(line[i])
-
+	// Iterate by rune (not byte) so multibyte UTF-8 in SSH args is preserved.
+	for _, c := range line {
 		if inQuote {
 			if c == quoteChar {
 				inQuote = false

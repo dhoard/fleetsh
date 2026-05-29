@@ -41,29 +41,88 @@ Exactly one of `--command`, `--script`, or `--ping` must be provided.
 
 ## Output Format
 
-Text output uses prefixes to indicate the type of line:
+Text output uses an aligned host prefix followed by a symbol indicating the type of line:
 
 ```
-host | line             stdout from remote host
-host ! line             stderr from remote host
-host | message          error message
-host | OK exit=N ...    fleetsh metadata (exit status, duration)
+info      | fleetsh v0.0.1          version info (literal "info" prefix)
+host      * line                    stdout from remote host
+host      ! line                    stderr from remote host
+host      ! message                 connection or execution error
+host      | exit=N duration=...      per-host completion (exit code, duration)
+summary   | ok=N failed=N total=N exit=N duration=Nms
 ```
 
 Example:
 ```
-runner-1 | Linux 5.15.0-generic
-runner-1 ! CPU: 2 cores, Load: 0.12
-runner-1 | OK exit=0 duration=123ms
+info      | fleetsh v0.0.1
+runner-1  * Linux 5.15.0-generic
+runner-1  ! CPU: 2 cores, Load: 0.12
+runner-1  | exit=0 duration=123ms
+summary   | ok=1 failed=0 total=1 exit=0 duration=130ms
 ```
 
-Lines with `|` are stdout from the remote host. Lines with `!` are stderr or errors. Lines with `OK` or `FAILED` are fleetsh metadata.
+Lines with `*` are stdout from the remote host. Lines with `!` are stderr or connection/execution errors. The `| exit=... duration=...` line is per-host completion metadata, and the final `summary` line aggregates results. The host prefix is padded so columns align.
+
+## Error Output Format
+
+When a CLI error occurs (e.g., invalid flags, missing arguments), the error is displayed with the message on its own line, indented by 2 spaces. For validation errors, a blank line and the usage information follow:
+
+```
+Error:
+  flag needs an argument: 'c' in -c
+
+Usage:
+  fleetsh [alias] [flags]
+
+Flags:
+...
+```
+
+### Mutually Exclusive Flags
+
+`--command`, `--script`, and `--ping` are mutually exclusive. If more than one is provided, the error lists only the flags that were actually supplied, in the order they appeared on the command line:
+
+```
+$ fleetsh -p 3 -c "uptime"
+Error:
+  --ping, --command are mutually exclusive
+
+$ fleetsh -c "uptime" -s ./script.sh
+Error:
+  --command, --script are mutually exclusive
+```
 
 ## Targeting Hosts
 
 - **Alias** (positional argument) — run on a single host: `fleetsh runner-1 -c "uptime"`
 - **Group** (`-g` flag) — run on all hosts in a group: `fleetsh -g runners -c "uptime"`
 - `-g` and positional argument are mutually exclusive
+
+### Pattern Matching
+
+Use bracket syntax `[...]` for regex patterns:
+
+```bash
+# Regex on group names
+fleetsh -g [web.*] -c "uptime"
+
+# Regex on aliases
+fleetsh [runner-.*] -c "uptime"
+
+# Match groups containing "prod"
+fleetsh -g [.*prod.*] -c "df -h"
+```
+
+**How it works**: If the target starts with `[` and ends with `]`, the inner content is treated as a regex pattern. Otherwise, it is treated as an exact name (alias or group) with fallback to implicit regex matching on group names when using `-g`.
+
+**Examples**:
+```
+fleetsh [runner-.*] -c "uname -a"           # matches runner-1, runner-2, runner-prod
+fleetsh "[db0[12]]" -c "postgres --version" # matches db01, db02
+fleetsh -g [web.*] -c "systemctl status"    # matches web-prod, web-staging
+```
+
+**Note**: Patterns are not implicitly anchored. Use `^` and `$` for exact matching.
 
 ## Command Mode
 
@@ -87,15 +146,16 @@ fleetsh -g all -s ./maintenance.sh
 Check host connectivity by sending ICMP (if available) or TCP ping:
 
 ```bash
-fleetsh -g all -p                    # ping each host 3 times (default)
-fleetsh -g all -p 5                  # ping each host 5 times
-fleetsh -g all --ping 3 -l 20        # ping 3 times with 20 concurrent hosts
+fleetsh -g all --ping                 # ping each host 3 times (default)
+fleetsh -g all --ping -l 20           # ping with 20 concurrent hosts
 ```
 
 Output:
 ```
-runner-1 | min=0.500ms avg=0.750ms max=1.200ms ok=3 failed=0 total=3
-runner-1 | exit=0 duration=5ms
+info      | fleetsh v0.0.1
+runner-1  | min=0.500ms avg=0.750ms max=1.200ms ok=3 failed=0 total=3
+runner-1  | exit=0 duration=5ms
+summary   | ok=1 failed=0 total=1 exit=0 duration=8ms
 ```
 
 ### Ping Behavior
@@ -103,6 +163,7 @@ runner-1 | exit=0 duration=5ms
 - Attempts ICMP ping first (requires root or `cap_net_raw`)
 - Falls back to TCP ping (connects to ports 22, 80, 443, 8080) if ICMP fails with permission denied
 - Reports min/avg/max RTT and packet counts
+- Honors `--timeout`, which bounds the overall ping operation
 
 ## Dry Run
 
@@ -201,6 +262,8 @@ alias [user@]hostname[:port] [ssh args...]
 
 When user is omitted, the current system user is used.
 
+**Note**: Aliases must contain only letters, numbers, underscores, and hyphens (`[a-zA-Z0-9_-]`). Spaces and special characters are not allowed.
+
 ### Groups
 
 Groups reference hosts by alias only — no connection info is repeated:
@@ -216,6 +279,7 @@ Rules:
 - Groups must be unique — duplicate `[groupname]` headers produce an error
 - Aliases must be unique — duplicate aliases produce an error
 - Group references must exist — referencing an undefined alias produces an error
+- Aliases and group names must match `[a-zA-Z0-9_-]`
 - `[all]` is not automatic — define it explicitly if you want `fleetsh -g all` to work
 - `summary` is a reserved word — cannot be used as an alias or group name
 - If an alias and group have the same name, the alias takes priority when resolving

@@ -14,8 +14,36 @@
 
 package main
 
-import "github.com/dhoard/fleetsh/internal/cli"
+import (
+	"os"
+	"strings"
+
+	"github.com/dhoard/fleetsh/internal/cli"
+)
+
+func preprocessArgs() []string {
+	args := os.Args[1:]
+	var result []string
+	i := 0
+	for i < len(args) {
+		arg := args[i]
+		if arg == "-p" || arg == "--ping" {
+			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
+				result = append(result, arg, "3")
+			} else {
+				result = append(result, arg, args[i+1])
+				i++
+			}
+			i++
+			continue
+		}
+		result = append(result, arg)
+		i++
+	}
+	return result
+}
 
 func main() {
+	os.Args = append([]string{os.Args[0]}, preprocessArgs()...)
 	cli.Execute()
 }

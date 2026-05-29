@@ -119,44 +119,6 @@ func (r *Runner) dryRunStream(ch chan<- StreamEvent, tasks []Task) {
 	}
 }
 
-func (r *Runner) Run(ctx context.Context, tasks []Task) []*Result {
-	events := r.Stream(ctx, tasks)
-	var results []*Result
-
-	current := &Result{}
-	var stdoutBuf, stderrBuf strings.Builder
-
-	for ev := range events {
-		if current.Host == "" {
-			current.Host = ev.Host
-			current.Group = ev.Group
-		}
-
-		if ev.Done {
-			current.Success = ev.Success
-			current.ExitCode = ev.ExitCode
-			current.Error = ev.Error
-			current.Duration = ev.Duration
-			current.Stdout = stdoutBuf.String()
-			current.Stderr = stderrBuf.String()
-			results = append(results, current)
-			current = &Result{}
-			stdoutBuf.Reset()
-			stderrBuf.Reset()
-		} else if ev.Error != "" {
-			current.Error = ev.Error
-		} else if ev.Stderr {
-			stderrBuf.WriteString(ev.Line)
-			stderrBuf.WriteByte('\n')
-		} else {
-			stdoutBuf.WriteString(ev.Line)
-			stdoutBuf.WriteByte('\n')
-		}
-	}
-
-	return results
-}
-
 func BuildTasks(hosts []*inventory.ResolvedHost, command string, script []byte, timeout time.Duration, isScript bool) []Task {
 	tasks := make([]Task, len(hosts))
 
@@ -191,7 +153,7 @@ func BuildTasks(hosts []*inventory.ResolvedHost, command string, script []byte, 
 	return tasks
 }
 
-func PingHosts(hosts []*inventory.ResolvedHost, count int, parallel int, failFast bool) <-chan StreamEvent {
+func PingHosts(ctx context.Context, hosts []*inventory.ResolvedHost, count int, parallel int, failFast bool) <-chan StreamEvent {
 	out := make(chan StreamEvent, 64)
 
 	go func() {
@@ -205,6 +167,9 @@ func PingHosts(hosts []*inventory.ResolvedHost, count int, parallel int, failFas
 			if failFast && failed.Load() {
 				break
 			}
+			if ctx.Err() != nil {
+				break
+			}
 
 			wg.Add(1)
 			sem <- struct{}{}
@@ -216,16 +181,20 @@ func PingHosts(hosts []*inventory.ResolvedHost, count int, parallel int, failFas
 				displayName := rh.Host.DisplayName()
 				start := time.Now()
 				ev := StreamEvent{
-					Host:     displayName,
-					Done:     true,
-					Duration: time.Since(start),
-					Type:     "ping",
+					Host: displayName,
+					Done: true,
+					Type: "ping",
 				}
 
-				if success, line, exitCode := doICMPPing(displayName, rh.Host.Name, count); success || exitCode != -1 {
+				// Attempt ICMP first. If ICMP is unavailable (e.g. raw sockets
+				// are not permitted), fall back to TCP ping. A genuine ICMP
+				// failure (packet loss, resolution error) is reported as-is.
+				success, line, exitCode, unavailable := doICMPPing(ctx, rh.Host.Name, count)
+				if !unavailable {
 					ev.Success = success
 					ev.Line = line
 					ev.ExitCode = exitCode
+					ev.Duration = time.Since(start)
 					if !success {
 						failed.Store(true)
 					}
@@ -233,17 +202,15 @@ func PingHosts(hosts []*inventory.ResolvedHost, count int, parallel int, failFas
 					return
 				}
 
-				if success, line, exitCode, dur := doTCPPing(displayName, rh.Host.Name, count, time.Since(start)); true {
-					ev.Success = success
-					ev.Line = line
-					ev.ExitCode = exitCode
-					ev.Duration = dur
-					if !success {
-						failed.Store(true)
-					}
-					out <- ev
-					return
+				success, line, exitCode = doTCPPing(ctx, rh.Host.Name, count)
+				ev.Success = success
+				ev.Line = line
+				ev.ExitCode = exitCode
+				ev.Duration = time.Since(start)
+				if !success {
+					failed.Store(true)
 				}
+				out <- ev
 			}(hosts[i])
 		}
 
@@ -253,28 +220,42 @@ func PingHosts(hosts []*inventory.ResolvedHost, count int, parallel int, failFas
 	return out
 }
 
-func doICMPPing(displayName, host string, count int) (bool, string, int) {
+// doICMPPing performs an ICMP ping. The final return value reports whether ICMP
+// is unavailable (e.g. permission denied for raw sockets), in which case the
+// caller should fall back to TCP ping rather than treating it as a failure.
+func doICMPPing(ctx context.Context, host string, count int) (success bool, line string, exitCode int, unavailable bool) {
 	pinger, err := ping.NewPinger(host)
 	if err != nil {
-		return false, err.Error(), -1
+		return false, err.Error(), -1, false
 	}
 
 	pinger.Count = count
 	pinger.Timeout = time.Duration(count)*time.Second + 5*time.Second
 	pinger.SetPrivileged(false)
 
-	err = pinger.Run()
-	stats := pinger.Statistics()
-
-	if err != nil {
-		if strings.Contains(err.Error(), "permission denied") || strings.Contains(err.Error(), "socket: permission denied") {
-			return false, "", -1
+	// go-ping v1.2.0 has no context-aware Run; stop the pinger when the
+	// context is cancelled so callers can abort in-flight pings.
+	stopped := make(chan struct{})
+	defer close(stopped)
+	go func() {
+		select {
+		case <-ctx.Done():
+			pinger.Stop()
+		case <-stopped:
 		}
-		return false, err.Error(), -1
+	}()
+
+	if err := pinger.Run(); err != nil {
+		if strings.Contains(err.Error(), "permission denied") || strings.Contains(err.Error(), "operation not permitted") {
+			return false, "", -1, true
+		}
+		return false, err.Error(), -1, false
 	}
 
+	stats := pinger.Statistics()
+
 	if stats.PacketsRecv == 0 {
-		return false, "100% packet loss", 1
+		return false, "100% packet loss", 1, false
 	}
 
 	minMs := float64(stats.MinRtt) / 1e6
@@ -282,17 +263,23 @@ func doICMPPing(displayName, host string, count int) (bool, string, int) {
 	maxMs := float64(stats.MaxRtt) / 1e6
 	ok := stats.PacketsRecv
 	failed := stats.PacketsSent - stats.PacketsRecv
-	return true, fmt.Sprintf("min=%.3fms avg=%.3fms max=%.3fms ok=%d failed=%d total=%d", minMs, avgMs, maxMs, ok, failed, stats.PacketsSent), 0
+	return true, fmt.Sprintf("min=%.3fms avg=%.3fms max=%.3fms ok=%d failed=%d total=%d", minMs, avgMs, maxMs, ok, failed, stats.PacketsSent), 0, false
 }
 
-func doTCPPing(displayName, host string, count int, elapsed time.Duration) (bool, string, int, time.Duration) {
+func doTCPPing(ctx context.Context, host string, count int) (bool, string, int) {
 	ports := []int{22, 80, 443, 8080}
 	var times []time.Duration
 
+	var dialer net.Dialer
 	for i := 0; i < count; i++ {
+		if ctx.Err() != nil {
+			break
+		}
 		for _, port := range ports {
 			start := time.Now()
-			conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", host, port), 5*time.Second)
+			dialCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			conn, err := dialer.DialContext(dialCtx, "tcp", fmt.Sprintf("%s:%d", host, port))
+			cancel()
 			dur := time.Since(start)
 			if err == nil {
 				conn.Close()
@@ -300,18 +287,18 @@ func doTCPPing(displayName, host string, count int, elapsed time.Duration) (bool
 				break
 			}
 		}
-		if len(times) == 0 || times[len(times)-1] != times[0] {
+		// Pace successive attempts, but don't sleep after the final iteration.
+		if i < count-1 {
 			time.Sleep(100 * time.Millisecond)
 		}
 	}
 
 	if len(times) == 0 {
-		return false, "tcp ping failed (no open ports detected)", 1, elapsed
+		return false, "tcp ping failed (no open ports detected)", 1
 	}
 
-	var minMs, avgMs, maxMs float64
-	minMs = float64(times[0].Nanoseconds()) / 1e6
-	maxMs = minMs
+	minMs := float64(times[0].Nanoseconds()) / 1e6
+	maxMs := minMs
 	var sum float64
 	for _, t := range times {
 		ms := float64(t.Nanoseconds()) / 1e6
@@ -323,10 +310,9 @@ func doTCPPing(displayName, host string, count int, elapsed time.Duration) (bool
 			maxMs = ms
 		}
 	}
-	avgMs = sum / float64(len(times))
+	avgMs := sum / float64(len(times))
 
-	elapsed += times[len(times)-1]
 	ok := len(times)
 	failed := count - len(times)
-	return true, fmt.Sprintf("min=%.3fms avg=%.3fms max=%.3fms ok=%d failed=%d total=%d", minMs, avgMs, maxMs, ok, failed, count), 0, elapsed
+	return true, fmt.Sprintf("min=%.3fms avg=%.3fms max=%.3fms ok=%d failed=%d total=%d", minMs, avgMs, maxMs, ok, failed, count), 0
 }
