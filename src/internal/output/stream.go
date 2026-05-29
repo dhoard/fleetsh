@@ -72,7 +72,7 @@ func StreamText(w io.Writer, version string, warning string, events <-chan sshru
 		} else if ev.Error != "" {
 			fmt.Fprintf(w, "%s | [error] %s\n", alignPrefix(ev.Host, maxLen), ev.Error)
 		} else if ev.Stderr {
-			fmt.Fprintf(w, "%s * [stderr] %s\n", alignPrefix(ev.Host, maxLen), ev.Line)
+			fmt.Fprintf(w, "%s ! %s\n", alignPrefix(ev.Host, maxLen), ev.Line)
 			current.Stderr += ev.Line + "\n"
 		} else {
 			fmt.Fprintf(w, "%s * %s\n", alignPrefix(ev.Host, maxLen), ev.Line)

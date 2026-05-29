@@ -31,20 +31,18 @@ import (
 )
 
 const (
-	minParallel  = 1
-	minPingCount = 1
-	minTimeout   = 1
+	minParallel = 1
+	minTimeout  = 1
+	defaultPing = 3
 )
 
 var (
 	flagInventory string
 	flagGroup     string
 	flagCommand   string
-	flagArgs      string
 	flagScript    string
 	flagUser      string
-	flagPing       bool
-	flagPingCount  int
+	flagPing      int
 	flagKey       string
 	flagParallel  int
 	flagTimeout   int
@@ -74,15 +72,12 @@ func buildRootCmd() *cobra.Command {
 
 	cmd.SetVersionTemplate("fleetsh v{{.Version}}\n")
 
-	cmd.Flags().StringVarP(&flagInventory, "inventory", "i", "", "inventory file path (default: .fleetsh, then ~/.fleetsh)")
+cmd.Flags().StringVarP(&flagInventory, "inventory", "i", "", "inventory file path (default: .fleetsh, then ~/.fleetsh)")
 	cmd.Flags().StringVarP(&flagGroup, "group", "g", "", "group to target")
 	cmd.Flags().StringVarP(&flagCommand, "command", "c", "", "command to run remotely")
 	cmd.Flags().StringVarP(&flagScript, "script", "s", "", "local script file to execute remotely")
-	cmd.Flags().StringVarP(&flagArgs, "args", "a", "", "command to run remotely (deprecated, use --command)")
-	cmd.Flags().MarkHidden("args")
 	cmd.Flags().StringVarP(&flagUser, "user", "u", "", "SSH username override")
-	cmd.Flags().BoolVarP(&flagPing, "ping", "p", false, "ping hosts (default: 10, mutually exclusive with -c/-s)")
-	cmd.Flags().IntVar(&flagPingCount, "ping-count", 10, "ping count (used with -p)")
+	cmd.Flags().IntVarP(&flagPing, "ping", "p", -1, "ping hosts (default: 3 pings, mutually exclusive with -c/-s)")
 	cmd.Flags().StringVarP(&flagKey, "key", "k", "", "SSH private key path")
 	cmd.Flags().IntVarP(&flagParallel, "parallel", "l", 1, "max concurrent hosts (default: sequential)")
 	cmd.Flags().IntVarP(&flagTimeout, "timeout", "o", 30000, "per-host timeout in milliseconds")
@@ -105,24 +100,23 @@ func runE(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("cannot specify both an alias argument and --group")
 	}
 
-	if flagArgs != "" && flagCommand != "" {
-		return fmt.Errorf("cannot specify both --command and deprecated --args (use --command)")
-	}
-	if flagArgs != "" {
-		flagCommand = flagArgs
+	if cmd.Flags().Changed("ping") && flagPing < 1 {
+		return fmt.Errorf("--ping must be >= 1, got %d", flagPing)
 	}
 
-	if flagPing && (flagCommand != "" || flagScript != "") {
+	if flagPing > 0 && (flagCommand != "" || flagScript != "") {
 		return fmt.Errorf("--ping is mutually exclusive with --command and --script")
 	}
 
-	if flagCommand == "" && flagScript == "" && !flagPing {
+	if flagCommand == "" && flagScript == "" && flagPing < 0 {
 		return fmt.Errorf("exactly one of --command, --script, or --ping is required")
 	}
 
-	if flagPingCount < minPingCount {
-		return fmt.Errorf("--ping-count must be >= %d, got %d", minPingCount, flagPingCount)
+	pingCount := flagPing
+	if pingCount < 0 {
+		pingCount = defaultPing
 	}
+
 	if flagParallel < minParallel {
 		return fmt.Errorf("--parallel must be >= %d, got %d", minParallel, flagParallel)
 	}
@@ -143,7 +137,7 @@ func runE(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("cannot specify both --command and --script")
 	}
 
-	if !flagPing && !flagDryRun {
+	if flagPing <= 0 && !flagDryRun {
 		if _, err := exec.LookPath("ssh"); err != nil {
 			return fmt.Errorf("ssh not found: please install OpenSSH client and ensure ssh is on your PATH")
 		}
@@ -186,9 +180,6 @@ func runE(cmd *cobra.Command, args []string) error {
 
 	versionMsg := fmt.Sprintf("fleetsh v%s", version)
 	warningMsg := ""
-	if flagArgs != "" {
-		warningMsg = "--args/-a is deprecated, use --command/-c instead"
-	}
 
 	if flagInsecure {
 		fmt.Fprintln(os.Stderr, "WARNING: --insecure is enabled. Host key verification is disabled. This is unsafe and should not be used in production.")
@@ -214,8 +205,8 @@ func runE(cmd *cobra.Command, args []string) error {
 
 	start := time.Now()
 
-	if flagPing {
-		events := sshrun.PingHosts(hosts, flagPingCount, flagParallel, flagFailFast)
+	if flagPing > 0 {
+		events := sshrun.PingHosts(hosts, pingCount, flagParallel, flagFailFast)
 		var results []*sshrun.Result
 		if flagJSON {
 			results = output.StreamJSON(os.Stdout, versionMsg, warningMsg, events, start)

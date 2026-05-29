@@ -99,8 +99,7 @@ func TestBuildRootCmdFlags(t *testing.T) {
 		{"command", "c", ""},
 		{"script", "s", ""},
 		{"user", "u", ""},
-		{"ping", "p", "false"},
-		{"ping-count", "", "10"},
+		{"ping", "p", "-1"},
 		{"key", "k", ""},
 		{"parallel", "l", "1"},
 		{"timeout", "o", "30000"},
@@ -145,9 +144,9 @@ func TestArgumentValidation(t *testing.T) {
 		expectErr  bool
 		errContain string
 	}{
-		// --ping-count validation
-		{"ping-count 0", []string{"-g", "test", "-p", "--ping-count", "0"}, true, "--ping-count must be >= 1"},
-		{"ping-count negative", []string{"-g", "test", "-p", "--ping-count", "-1"}, true, "--ping-count must be >= 1"},
+		// --ping validation
+		{"ping 0", []string{"-g", "test", "-p", "0"}, true, "--ping must be >= 1"},
+		{"ping negative", []string{"-g", "test", "-p", "-1"}, true, "--ping must be >= 1"},
 
 		// --parallel validation
 		{"parallel 0", []string{"-g", "test", "-c", "echo", "--parallel", "0"}, true, "--parallel must be >= 1"},
@@ -164,8 +163,8 @@ func TestArgumentValidation(t *testing.T) {
 		{"key missing", []string{"-g", "test", "-c", "echo", "--key", "/nonexistent/key"}, true, "cannot access SSH key file"},
 
 		// Mutual exclusivity
-		{"ping with command", []string{"-g", "test", "-p", "-c", "echo"}, true, "--ping is mutually exclusive"},
-		{"ping with script", []string{"-g", "test", "-p", "-s", "script.sh"}, true, "--ping is mutually exclusive"},
+		{"ping with command", []string{"-g", "test", "-p", "3", "-c", "echo"}, true, "--ping is mutually exclusive"},
+		{"ping with script", []string{"-g", "test", "-p", "3", "-s", "script.sh"}, true, "--ping is mutually exclusive"},
 
 		// Required flag
 		{"no action flag", []string{"-g", "test"}, true, "exactly one of --command, --script, or --ping is required"},
