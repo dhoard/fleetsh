@@ -59,6 +59,33 @@ func TestVersion(t *testing.T) {
 	}
 }
 
+func TestVersionFlag(t *testing.T) {
+	cmd := buildRootCmd()
+
+	tests := []struct {
+		name    string
+		args    []string
+		wantOut string
+	}{
+		{"-v flag", []string{"-v"}, "fleetsh v0.0.1\n"},
+		{"--version flag", []string{"--version"}, "fleetsh v0.0.1\n"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd.SetArgs(tt.args)
+			out := &strings.Builder{}
+			cmd.SetOut(out)
+			cmd.SetErr(&strings.Builder{})
+			cmd.Execute()
+
+			if got := out.String(); got != tt.wantOut {
+				t.Errorf("output = %q, want %q", got, tt.wantOut)
+			}
+		})
+	}
+}
+
 func TestBuildRootCmdFlags(t *testing.T) {
 	cmd := buildRootCmd()
 

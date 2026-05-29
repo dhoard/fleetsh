@@ -64,12 +64,15 @@ func Execute() {
 
 func buildRootCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "fleetsh [alias] [flags]",
-		Short: "fleetsh v" + version,
-		Long:  "fleetsh v" + version,
-		Args:  cobra.MaximumNArgs(1),
-		RunE:  runE,
+		Use:     "fleetsh [alias] [flags]",
+		Short:   "fleetsh v" + version,
+		Long:    "fleetsh v" + version,
+		Args:    cobra.MaximumNArgs(1),
+		RunE:    runE,
+		Version: version,
 	}
+
+	cmd.SetVersionTemplate("fleetsh v{{.Version}}\n")
 
 	cmd.Flags().StringVarP(&flagInventory, "inventory", "i", "", "inventory file path (default: .fleetsh, then ~/.fleetsh)")
 	cmd.Flags().StringVarP(&flagGroup, "group", "g", "", "group to target")
