@@ -42,12 +42,12 @@ func PrintResults(w io.Writer, results []*sshrun.Result) {
 
 		if r.Stderr != "" {
 			for _, line := range strings.Split(strings.TrimRight(r.Stderr, "\n"), "\n") {
-				fmt.Fprintf(w, "%s | [stderr] %s\n", r.Host, line)
+				fmt.Fprintf(w, "%s ! %s\n", r.Host, line)
 			}
 		}
 
 		if r.Error != "" {
-			fmt.Fprintf(w, "%s | [error] %s\n", r.Host, r.Error)
+			fmt.Fprintf(w, "%s | %s\n", r.Host, r.Error)
 		}
 
 		fmt.Fprintf(w, "%s | %s exit=%d duration=%s\n", r.Host, status, r.ExitCode, formatDuration(r.Duration))

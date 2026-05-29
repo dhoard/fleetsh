@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"unicode"
 )
 
 func Parse(path string) (*Inventory, error) {
@@ -87,12 +88,16 @@ func Parse(path string) (*Inventory, error) {
 }
 
 func parseHostDefinition(line string) *Host {
-	parts := strings.Fields(line)
-	alias := parts[0]
+	args := parseSSHArgs(line)
+	if len(args) == 0 {
+		return &Host{}
+	}
+
+	alias := args[0]
 	host := &Host{Alias: alias}
 
-	if len(parts) >= 2 {
-		addr := parts[1]
+	if len(args) >= 2 {
+		addr := args[1]
 		if atIdx := strings.LastIndex(addr, "@"); atIdx >= 0 {
 			userPart := addr[:atIdx]
 			hostPart := addr[atIdx+1:]
@@ -106,7 +111,48 @@ func parseHostDefinition(line string) *Host {
 		host.Name = alias
 	}
 
+	if len(args) > 2 {
+		host.SSHArgs = args[2:]
+	}
+
 	return host
+}
+
+func parseSSHArgs(line string) []string {
+	var args []string
+	var current strings.Builder
+	inQuote := false
+	var quoteChar rune
+
+	for i := 0; i < len(line); i++ {
+		c := rune(line[i])
+
+		if inQuote {
+			if c == quoteChar {
+				inQuote = false
+			} else {
+				current.WriteRune(c)
+			}
+		} else {
+			if c == '"' || c == '\'' {
+				inQuote = true
+				quoteChar = c
+			} else if unicode.IsSpace(c) {
+				if current.Len() > 0 {
+					args = append(args, current.String())
+					current.Reset()
+				}
+			} else {
+				current.WriteRune(c)
+			}
+		}
+	}
+
+	if current.Len() > 0 {
+		args = append(args, current.String())
+	}
+
+	return args
 }
 
 func splitHostPort(addr string) (string, int) {

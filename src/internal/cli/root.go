@@ -41,16 +41,12 @@ var (
 	flagGroup     string
 	flagCommand   string
 	flagScript    string
-	flagUser      string
 	flagPing      int
-	flagKey       string
 	flagParallel  int
 	flagTimeout   int
 	flagDryRun    bool
 	flagJSON      bool
 	flagFailFast  bool
-	flagInsecure  bool
-	flagTTY       bool
 )
 
 func Execute() {
@@ -71,78 +67,77 @@ func buildRootCmd() *cobra.Command {
 	}
 
 	cmd.SetVersionTemplate("fleetsh v{{.Version}}\n")
-
-cmd.Flags().StringVarP(&flagInventory, "inventory", "i", "", "inventory file path (default: .fleetsh, then ~/.fleetsh)")
+	cmd.Flags().SortFlags = false
 	cmd.Flags().StringVarP(&flagGroup, "group", "g", "", "group to target")
-	cmd.Flags().StringVarP(&flagCommand, "command", "c", "", "command to run remotely")
-	cmd.Flags().StringVarP(&flagScript, "script", "s", "", "local script file to execute remotely")
-	cmd.Flags().StringVarP(&flagUser, "user", "u", "", "SSH username override")
-	cmd.Flags().IntVarP(&flagPing, "ping", "p", -1, "ping hosts (default: 3 pings, mutually exclusive with -c/-s)")
-	cmd.Flags().StringVarP(&flagKey, "key", "k", "", "SSH private key path")
+	cmd.Flags().StringVarP(&flagInventory, "inventory", "i", "", "inventory file path (default: .fleetsh, then ~/.fleetsh)")
+	cmd.Flags().StringVarP(&flagCommand, "command", "c", "", "command to run remotely (mutually exclusive with -s, -p)")
+	cmd.Flags().StringVarP(&flagScript, "script", "s", "", "local script file to execute remotely (mutually exclusive with -c, -p)")
+	cmd.Flags().IntVarP(&flagTimeout, "timeout", "t", 30000, "per-host timeout in milliseconds")
 	cmd.Flags().IntVarP(&flagParallel, "parallel", "l", 1, "max concurrent hosts (default: sequential)")
-	cmd.Flags().IntVarP(&flagTimeout, "timeout", "o", 30000, "per-host timeout in milliseconds")
-	cmd.Flags().BoolVar(&flagDryRun, "dry-run", false, "print what would run without connecting")
 	cmd.Flags().BoolVar(&flagJSON, "json", false, "output JSON")
 	cmd.Flags().BoolVar(&flagFailFast, "fail-fast", false, "stop scheduling new hosts after first failure")
-	cmd.Flags().BoolVar(&flagInsecure, "insecure", false, "skip host key verification")
-	cmd.Flags().BoolVarP(&flagTTY, "tty", "t", false, "allocate a pseudo-terminal (needed for sudo)")
+	cmd.Flags().BoolVar(&flagDryRun, "dry-run", false, "print what would run without connecting")
+	cmd.Flags().IntVarP(&flagPing, "ping", "p", 0, "ping hosts (default: 3) (mutually exclusive with -c, -s)")
+	cmd.Flags().Bool("help", false, "help for fleetsh")
 
 	return cmd
 }
 
 func runE(cmd *cobra.Command, args []string) error {
+	errf := func(format string, args ...interface{}) error {
+		return fmt.Errorf("\n  "+format+"\n", args...)
+	}
+
 	if len(args) == 0 && flagGroup == "" {
-		cmd.Help()
-		return nil
+		if flagCommand == "" && flagScript == "" && flagPing == 0 {
+			cmd.Help()
+			return nil
+		}
 	}
 
 	if len(args) > 0 && flagGroup != "" {
-		return fmt.Errorf("cannot specify both an alias argument and --group")
+		return errf("cannot specify both an alias argument and --group")
 	}
 
 	if cmd.Flags().Changed("ping") && flagPing < 1 {
-		return fmt.Errorf("--ping must be >= 1, got %d", flagPing)
+		return errf("--ping must be >= 1, got %d", flagPing)
+	}
+
+	if flagCommand != "" && flagScript != "" {
+		return errf("--command and --script are mutually exclusive")
 	}
 
 	if flagPing > 0 && (flagCommand != "" || flagScript != "") {
-		return fmt.Errorf("--ping is mutually exclusive with --command and --script")
+		return errf("--ping is mutually exclusive with --command and --script")
 	}
 
-	if flagCommand == "" && flagScript == "" && flagPing < 0 {
-		return fmt.Errorf("exactly one of --command, --script, or --ping is required")
+	if flagCommand == "" && flagScript == "" && flagPing == 0 {
+		return errf("exactly one of --command, --script, or --ping is required")
 	}
 
 	pingCount := flagPing
-	if pingCount < 0 {
+	if pingCount == 0 {
 		pingCount = defaultPing
 	}
 
 	if flagParallel < minParallel {
-		return fmt.Errorf("--parallel must be >= %d, got %d", minParallel, flagParallel)
+		return errf("--parallel must be >= %d, got %d", minParallel, flagParallel)
 	}
 	if flagTimeout < minTimeout {
-		return fmt.Errorf("--timeout must be >= %d, got %d", minTimeout, flagTimeout)
+		return errf("--timeout must be >= %d, got %d", minTimeout, flagTimeout)
 	}
 	if flagInventory != "" {
 		if _, err := os.Stat(flagInventory); err != nil {
-			return fmt.Errorf("cannot access inventory file %q: %w", flagInventory, err)
+			return errf("cannot access inventory file %q: %w", flagInventory, err)
 		}
-	}
-	if flagKey != "" {
-		if _, err := os.Stat(flagKey); err != nil {
-			return fmt.Errorf("cannot access SSH key file %q: %w", flagKey, err)
-		}
-	}
-	if flagCommand != "" && flagScript != "" {
-		return fmt.Errorf("cannot specify both --command and --script")
 	}
 
 	if flagPing <= 0 && !flagDryRun {
 		if _, err := exec.LookPath("ssh"); err != nil {
-			return fmt.Errorf("ssh not found: please install OpenSSH client and ensure ssh is on your PATH")
+			return errf("ssh not found: please install OpenSSH client and ensure ssh is on your PATH")
 		}
 		if _, err := exec.LookPath("scp"); err != nil {
-			return fmt.Errorf("scp not found: please install OpenSSH client and ensure scp is on your PATH")
+			return errf("scp not found: please install OpenSSH client and ensure scp is on your PATH")
 		}
 	}
 
@@ -181,10 +176,6 @@ func runE(cmd *cobra.Command, args []string) error {
 	versionMsg := fmt.Sprintf("fleetsh v%s", version)
 	warningMsg := ""
 
-	if flagInsecure {
-		fmt.Fprintln(os.Stderr, "WARNING: --insecure is enabled. Host key verification is disabled. This is unsafe and should not be used in production.")
-	}
-
 	var scriptContent []byte
 	isScript := false
 	command := flagCommand
@@ -198,10 +189,6 @@ func runE(cmd *cobra.Command, args []string) error {
 	}
 
 	tasks := sshrun.BuildTasks(hosts, command, scriptContent, time.Duration(flagTimeout)*time.Millisecond, isScript)
-	tasks = sshrun.ApplyUserOverride(tasks, flagUser)
-	tasks = sshrun.ApplyKeyOverride(tasks, flagKey)
-	tasks = sshrun.ApplyInsecure(tasks, flagInsecure)
-	tasks = sshrun.ApplyTTY(tasks, flagTTY)
 
 	start := time.Now()
 

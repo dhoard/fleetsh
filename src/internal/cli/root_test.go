@@ -94,20 +94,16 @@ func TestBuildRootCmdFlags(t *testing.T) {
 		short    string
 		defValue string
 	}{
-		{"inventory", "i", ""},
 		{"group", "g", ""},
+		{"inventory", "i", ""},
 		{"command", "c", ""},
 		{"script", "s", ""},
-		{"user", "u", ""},
-		{"ping", "p", "-1"},
-		{"key", "k", ""},
+		{"timeout", "t", "30000"},
+		{"ping", "p", "0"},
 		{"parallel", "l", "1"},
-		{"timeout", "o", "30000"},
 		{"dry-run", "", "false"},
 		{"json", "", "false"},
 		{"fail-fast", "", "false"},
-		{"insecure", "", "false"},
-		{"tty", "t", "false"},
 	}
 
 	for _, f := range flags {
@@ -158,9 +154,6 @@ func TestArgumentValidation(t *testing.T) {
 
 		// --inventory path validation
 		{"inventory missing", []string{"-g", "test", "-c", "echo", "--inventory", "/nonexistent/path"}, true, "cannot access inventory file"},
-
-		// --key path validation
-		{"key missing", []string{"-g", "test", "-c", "echo", "--key", "/nonexistent/key"}, true, "cannot access SSH key file"},
 
 		// Mutual exclusivity
 		{"ping with command", []string{"-g", "test", "-p", "3", "-c", "echo"}, true, "--ping is mutually exclusive"},
