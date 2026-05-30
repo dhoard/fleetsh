@@ -217,26 +217,12 @@ func streamPipes(cmd *exec.Cmd, ch chan<- StreamEvent, stdoutPipe, stderrPipe io
 
 	go func() {
 		defer wg.Done()
-		scanner := bufio.NewScanner(stdoutPipe)
-		scanner.Buffer(make([]byte, 0, 64*1024), maxScanLineSize)
-		for scanner.Scan() {
-			ch <- StreamEvent{Host: displayName, Line: scanner.Text()}
-		}
-		if err := scanner.Err(); err != nil {
-			ch <- StreamEvent{Host: displayName, Error: "stdout read error: " + err.Error(), Stderr: true}
-		}
+		streamReader(stdoutPipe, ch, displayName, false)
 	}()
 
 	go func() {
 		defer wg.Done()
-		scanner := bufio.NewScanner(stderrPipe)
-		scanner.Buffer(make([]byte, 0, 64*1024), maxScanLineSize)
-		for scanner.Scan() {
-			ch <- StreamEvent{Host: displayName, Line: scanner.Text(), Stderr: true}
-		}
-		if err := scanner.Err(); err != nil {
-			ch <- StreamEvent{Host: displayName, Error: "stderr read error: " + err.Error(), Stderr: true}
-		}
+		streamReader(stderrPipe, ch, displayName, true)
 	}()
 
 	wg.Wait()
@@ -268,6 +254,60 @@ func streamPipes(cmd *exec.Cmd, ch chan<- StreamEvent, stdoutPipe, stderrPipe io
 	}
 
 	ch <- event
+}
+
+func streamReader(r io.Reader, ch chan<- StreamEvent, displayName string, isStderr bool) {
+	reader := bufio.NewReaderSize(r, 64*1024)
+	line := make([]byte, 0, 1024)
+	buf := make([]byte, maxScanLineSize)
+	truncated := false
+
+	for {
+		n, err := reader.Read(buf)
+		if n == 0 && err == io.EOF {
+			if len(line) > 0 {
+				if truncated {
+					ch <- StreamEvent{Host: displayName, Line: string(line) + " (truncated)", Stderr: isStderr}
+				} else {
+					ch <- StreamEvent{Host: displayName, Line: string(line), Stderr: isStderr}
+				}
+			}
+			break
+		}
+		if err != nil {
+			if len(line) > 0 {
+				if truncated {
+					ch <- StreamEvent{Host: displayName, Line: string(line) + " (truncated)", Stderr: isStderr}
+				} else {
+					ch <- StreamEvent{Host: displayName, Line: string(line), Stderr: isStderr}
+				}
+			}
+			ch <- StreamEvent{Host: displayName, Error: "read error: " + err.Error(), Stderr: true}
+			break
+		}
+
+		data := buf[:n]
+		for i := 0; i < len(data); i++ {
+			if data[i] == '\n' {
+				if len(line) > 0 {
+					if truncated {
+						ch <- StreamEvent{Host: displayName, Line: string(line) + " (truncated)", Stderr: isStderr}
+					} else {
+						ch <- StreamEvent{Host: displayName, Line: string(line), Stderr: isStderr}
+					}
+					line = line[:0]
+					truncated = false
+				}
+			} else {
+				if !truncated {
+					line = append(line, data[i])
+					if len(line) > maxScanLineSize {
+						truncated = true
+					}
+				}
+			}
+		}
+	}
 }
 
 func FormatDryRun(hc HostConfig, mode string, content string) string {
