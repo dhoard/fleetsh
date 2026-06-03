@@ -313,13 +313,23 @@ Lines starting with `#` or `;` are ignored.
 
 ## Build & Install
 
-Build from source:
+Requires [GoReleaser](https://goreleaser.com/install/).
+
+### Local development build
 
 ```bash
 ./build.sh
 ```
 
-Build then copy the binary to your $PATH
+Runs tests, vet, and builds a single binary for the current platform. Output in `dist/`.
+
+### Cross-platform release packaging
+
+```bash
+./build.sh release
+```
+
+Runs tests, vet, cross-compiles for all target platforms (Linux amd64, arm64, 386; macOS amd64, arm64), and creates `.tar.gz` archives and a `checksums.txt` in `dist/`.
 
 ## License
 

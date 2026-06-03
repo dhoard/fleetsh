@@ -39,6 +39,20 @@ if [ "$lowest_go" != "$min_go_version" ]; then
     exit 1
 fi
 
+if ! command -v goreleaser &>/dev/null; then
+    echo "build: goreleaser is required (not found)"
+    exit 1
+fi
+
+# --- version ---
+
+version=$(grep -oP 'var version = "\K[^"]+' "${srcdir}/internal/cli/version.go")
+if [ -z "${version}" ]; then
+    echo "build: could not parse version from internal/cli/version.go"
+    exit 1
+fi
+export FLEETSH_VERSION="${version}"
+
 # --- test ---
 
 echo "==> Testing..."
@@ -52,9 +66,33 @@ go vet ./...
 
 # --- build ---
 
-echo "==> Building..."
-mkdir -p "${scriptdir}/bin"
-go build -o "${scriptdir}/bin/fleetsh" ./cmd/fleetsh
+cd "${scriptdir}"
 
-echo ""
-echo "Built: bin/fleetsh"
+case "${1:-}" in
+    release)
+        echo "==> Building release (all targets)..."
+        goreleaser release --clean --snapshot --skip=publish
+
+        rm -rf "${scriptdir}/package"
+        mkdir -p "${scriptdir}/package"
+
+        for archive in "${scriptdir}/dist"/*.tar.gz; do
+            if [ -f "$archive" ]; then
+                filename=$(basename "$archive")
+                cp "$archive" "${scriptdir}/package/"
+                (cd "${scriptdir}/package" && sha256sum "$filename" > "${filename}.sha256")
+            fi
+        done
+
+        echo ""
+        echo "Packaged:"
+        ls -lah "${scriptdir}/package/"
+        ;;
+    *)
+        echo "==> Building (single target)..."
+        goreleaser build --single-target --snapshot --clean
+        echo ""
+        echo "Built:"
+        ls -la dist/
+        ;;
+esac

@@ -10,17 +10,22 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.25"
+          cache: true
+          cache-dependency-path: src/go.sum
 
-      - name: Build
-        run: ./build.sh
+      - name: Cache goreleaser
+        uses: actions/cache@v5
+        with:
+          path: ~/go/bin
+          key: go-bin-${{ runner.os }}-goreleaser-v2.13.0
 
-      - name: Test
-        run: ./test.sh
+      - name: Install goreleaser
+        run: command -v goreleaser || go install github.com/goreleaser/goreleaser/v2@v2.13.0
 
-      - name: Vet
-        run: cd src && go vet ./...
+      - name: Build, test, vet, package
+        run: ./build-and-package.sh release
