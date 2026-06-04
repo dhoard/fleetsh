@@ -41,13 +41,15 @@ type Runner struct {
 	Parallel int
 	FailFast bool
 	DryRun   bool
+	NoTrunc  bool
 }
 
-func NewRunner(parallel int, failFast bool, dryRun bool) *Runner {
+func NewRunner(parallel int, failFast bool, dryRun bool, noTrunc bool) *Runner {
 	return &Runner{
 		Parallel: parallel,
 		FailFast: failFast,
 		DryRun:   dryRun,
+		NoTrunc:  noTrunc,
 	}
 }
 
@@ -78,12 +80,12 @@ func (r *Runner) Stream(ctx context.Context, tasks []Task) <-chan StreamEvent {
 				defer wg.Done()
 				defer func() { <-sem }()
 
-				var ch <-chan StreamEvent
-				if task.IsScript {
-					ch = StreamScript(ctx, task.HostConfig, task.Script, task.Timeout)
-				} else {
-					ch = StreamCommand(ctx, task.HostConfig, task.Command, task.Timeout)
-				}
+			var ch <-chan StreamEvent
+			if task.IsScript {
+				ch = StreamScript(ctx, task.HostConfig, task.Script, task.Timeout, r.NoTrunc)
+			} else {
+				ch = StreamCommand(ctx, task.HostConfig, task.Command, task.Timeout, r.NoTrunc)
+			}
 
 				for ev := range ch {
 					ev.Group = task.Host.Group
