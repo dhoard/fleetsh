@@ -1,3 +1,7 @@
+[![Build](https://github.com/dhoard/fleetsh/actions/workflows/build.yaml/badge.svg)](https://github.com/dhoard/fleetsh/actions/workflows/build.yaml)
+[![Go Version](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)](https://go.dev/)
+[![License](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
+
 # fleetsh
 
 Run shell commands or scripts across a fleet of servers over SSH, or ping hosts to check connectivity.
