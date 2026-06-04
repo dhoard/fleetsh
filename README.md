@@ -24,6 +24,7 @@ fleetsh [alias] [flags]
 | `--json` | | | Output JSON |
 | `--fail-fast` | | | Stop scheduling new hosts after first failure |
 | `--dry-run` | | | Print what would run without connecting |
+| `--no-trunc` | | | Disable output line truncation |
 | `--ping` | `-p` | | Ping hosts (default: 3) (mutually exclusive with -c, -s) |
 | `--help` | | | Help for fleetsh |
 | `--version` | `-v` | | Version for fleetsh |
@@ -253,12 +254,12 @@ alias [user@]hostname[:port] [ssh args...]
 
 | Format | Example |
 |--------|---------|
-| Alias + user + host | `runner-1 administrator@runner-1.address.cx` |
-| Alias + user + host + port | `db1 postgres@db1.example.cx:5432` |
-| Alias + host (no user) | `web01 web01.example.com` |
-| Alias + host + port (no user) | `web01 web01.example.com:2222` |
-| Alias + user + host + SSH args | `runner-1 admin@runner-1.address.cx -i key.pem -o ServerAliveInterval=60` |
-| Alias only | `localhost` |
+| alias + user + host | `runner-1 administrator@runner-1.address.cx` |
+| alias + user + host + port | `db1 postgres@db1.example.cx:5432` |
+| alias + host (no user) | `web01 web01.example.com` |
+| alias + host + port (no user) | `web01 web01.example.com:2222` |
+| alias + user + host + SSH args | `runner-1 admin@runner-1.address.cx -i key.pem -o ServerAliveInterval=60` |
+| alias only | `localhost` |
 
 When user is omitted, the current system user is used.
 

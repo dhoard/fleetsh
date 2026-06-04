@@ -162,7 +162,7 @@ func uploadScript(ctx context.Context, hc HostConfig, content []byte) (string, e
 	return remotePath, nil
 }
 
-func executeRemoteScript(ctx context.Context, hc HostConfig, content []byte, timeout time.Duration) <-chan StreamEvent {
+func executeRemoteScript(ctx context.Context, hc HostConfig, content []byte, timeout time.Duration, noTrunc bool) <-chan StreamEvent {
 	ch := make(chan StreamEvent, 64)
 	go func() {
 		defer close(ch)
@@ -193,20 +193,20 @@ func executeRemoteScript(ctx context.Context, hc HostConfig, content []byte, tim
 		stdoutPipe, _ := cmd.StdoutPipe()
 		stderrPipe, _ := cmd.StderrPipe()
 
-		streamPipes(cmd, ch, stdoutPipe, stderrPipe, displayName, start, ctx)
+		streamPipes(cmd, ch, stdoutPipe, stderrPipe, displayName, start, ctx, noTrunc)
 	}()
 	return ch
 }
 
-func StreamCommand(ctx context.Context, hc HostConfig, command string, timeout time.Duration) <-chan StreamEvent {
-	return executeRemoteScript(ctx, hc, []byte(command), timeout)
+func StreamCommand(ctx context.Context, hc HostConfig, command string, timeout time.Duration, noTrunc bool) <-chan StreamEvent {
+	return executeRemoteScript(ctx, hc, []byte(command), timeout, noTrunc)
 }
 
-func StreamScript(ctx context.Context, hc HostConfig, scriptContent []byte, timeout time.Duration) <-chan StreamEvent {
-	return executeRemoteScript(ctx, hc, scriptContent, timeout)
+func StreamScript(ctx context.Context, hc HostConfig, scriptContent []byte, timeout time.Duration, noTrunc bool) <-chan StreamEvent {
+	return executeRemoteScript(ctx, hc, scriptContent, timeout, noTrunc)
 }
 
-func streamPipes(cmd *exec.Cmd, ch chan<- StreamEvent, stdoutPipe, stderrPipe io.Reader, displayName string, start time.Time, ctx context.Context) {
+func streamPipes(cmd *exec.Cmd, ch chan<- StreamEvent, stdoutPipe, stderrPipe io.Reader, displayName string, start time.Time, ctx context.Context, noTrunc bool) {
 	if err := cmd.Start(); err != nil {
 		ch <- StreamEvent{Host: displayName, Error: err.Error(), Done: true, ExitCode: -1}
 		return
@@ -217,12 +217,12 @@ func streamPipes(cmd *exec.Cmd, ch chan<- StreamEvent, stdoutPipe, stderrPipe io
 
 	go func() {
 		defer wg.Done()
-		streamReader(stdoutPipe, ch, displayName, false)
+		streamReader(stdoutPipe, ch, displayName, false, noTrunc)
 	}()
-
+	
 	go func() {
 		defer wg.Done()
-		streamReader(stderrPipe, ch, displayName, true)
+		streamReader(stderrPipe, ch, displayName, true, noTrunc)
 	}()
 
 	wg.Wait()
@@ -256,7 +256,7 @@ func streamPipes(cmd *exec.Cmd, ch chan<- StreamEvent, stdoutPipe, stderrPipe io
 	ch <- event
 }
 
-func streamReader(r io.Reader, ch chan<- StreamEvent, displayName string, isStderr bool) {
+func streamReader(r io.Reader, ch chan<- StreamEvent, displayName string, isStderr bool, noTrunc bool) {
 	reader := bufio.NewReaderSize(r, 64*1024)
 	line := make([]byte, 0, 1024)
 	buf := make([]byte, maxScanLineSize)
@@ -301,7 +301,7 @@ func streamReader(r io.Reader, ch chan<- StreamEvent, displayName string, isStde
 			} else {
 				if !truncated {
 					line = append(line, data[i])
-					if len(line) > maxScanLineSize {
+					if !noTrunc && len(line) > maxScanLineSize {
 						truncated = true
 					}
 				}

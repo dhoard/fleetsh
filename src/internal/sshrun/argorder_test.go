@@ -141,7 +141,7 @@ func TestStreamPipesLongLineNotTruncated(t *testing.T) {
 
 	ch := make(chan StreamEvent, 64)
 	go func() {
-		streamPipes(cmd, ch, stdout, stderr, "h1", time.Now(), context.Background())
+		streamPipes(cmd, ch, stdout, stderr, "h1", time.Now(), context.Background(), false)
 		close(ch)
 	}()
 
@@ -177,5 +177,127 @@ collect:
 	}
 	if stdoutLen != lineLen {
 		t.Errorf("captured stdout length = %d, want %d (line was truncated)", stdoutLen, lineLen)
+	}
+}
+
+func TestStreamPipesNoTrunc(t *testing.T) {
+	const lineLen = 2 * 1024 * 1024
+	cmd := exec.Command("sh", "-c", "printf 'X%.0s' $(seq 1 "+strconv.Itoa(lineLen)+")")
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatalf("StdoutPipe: %v", err)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		t.Fatalf("StderrPipe: %v", err)
+	}
+
+	ch := make(chan StreamEvent, 64)
+	go func() {
+		streamPipes(cmd, ch, stdout, stderr, "h1", time.Now(), context.Background(), true)
+		close(ch)
+	}()
+
+	var stdoutLen int
+	var done bool
+	var scanErr string
+	var truncatedMarkerSeen bool
+	timeout := time.After(60 * time.Second)
+collect:
+	for {
+		select {
+		case ev, ok := <-ch:
+			if !ok {
+				break collect
+			}
+			switch {
+			case ev.Done:
+				done = true
+			case ev.Error != "":
+				scanErr = ev.Error
+			case !ev.Stderr:
+				stdoutLen += len(ev.Line)
+				if strings.Contains(ev.Line, "(truncated)") {
+					truncatedMarkerSeen = true
+				}
+			}
+		case <-timeout:
+			t.Fatal("streamPipes did not complete within timeout")
+		}
+	}
+
+	if scanErr != "" {
+		t.Fatalf("unexpected scan error: %s", scanErr)
+	}
+	if !done {
+		t.Fatalf("missing Done event")
+	}
+	if truncatedMarkerSeen {
+		t.Errorf("unexpected (truncated) marker when noTrunc=true")
+	}
+	if stdoutLen != lineLen {
+		t.Errorf("captured stdout length = %d, want %d (line was truncated)", stdoutLen, lineLen)
+	}
+}
+
+func TestStreamPipesTruncatedDefault(t *testing.T) {
+	const lineLen = 2 * 1024 * 1024
+	cmd := exec.Command("sh", "-c", "printf 'X%.0s' $(seq 1 "+strconv.Itoa(lineLen)+")")
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatalf("StdoutPipe: %v", err)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		t.Fatalf("StderrPipe: %v", err)
+	}
+
+	ch := make(chan StreamEvent, 64)
+	go func() {
+		streamPipes(cmd, ch, stdout, stderr, "h1", time.Now(), context.Background(), false)
+		close(ch)
+	}()
+
+	var stdoutLen int
+	var done bool
+	var scanErr string
+	var truncatedMarkerSeen bool
+	timeout := time.After(60 * time.Second)
+collect:
+	for {
+		select {
+		case ev, ok := <-ch:
+			if !ok {
+				break collect
+			}
+			switch {
+			case ev.Done:
+				done = true
+			case ev.Error != "":
+				scanErr = ev.Error
+			case !ev.Stderr:
+				stdoutLen += len(ev.Line)
+				if strings.Contains(ev.Line, "(truncated)") {
+					truncatedMarkerSeen = true
+				}
+			}
+		case <-timeout:
+			t.Fatal("streamPipes did not complete within timeout")
+		}
+	}
+
+	if scanErr != "" {
+		t.Fatalf("unexpected scan error: %s", scanErr)
+	}
+	if !done {
+		t.Fatalf("missing Done event")
+	}
+	if !truncatedMarkerSeen {
+		t.Errorf("expected (truncated) marker when noTrunc=false, but not found")
+	}
+	if stdoutLen >= lineLen {
+		t.Errorf("captured stdout length = %d, expected < %d (line should be truncated)", stdoutLen, lineLen)
 	}
 }

@@ -94,6 +94,7 @@ func TestBuildRootCmdFlags(t *testing.T) {
 		{"dry-run", "", "false"},
 		{"json", "", "false"},
 		{"fail-fast", "", "false"},
+		{"no-trunc", "", "false"},
 	}
 
 	for _, f := range flags {
