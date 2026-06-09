@@ -149,7 +149,8 @@ func uploadScript(ctx context.Context, hc HostConfig, content []byte) (string, e
 	}
 	localFile.Close()
 
-	uniqueID := filepath.Base(localPath)
+	base := filepath.Base(localPath)
+	uniqueID := strings.TrimSuffix(strings.TrimPrefix(base, "fleetsh-"), ".tmp")
 	remotePath := "/tmp/fleetsh-" + uniqueID + ".tmp"
 
 	cmd := exec.CommandContext(ctx, "scp", scpArgs(hc, localPath, remotePath)...)
@@ -216,7 +217,8 @@ func executeRemoteScript(ctx context.Context, hc HostConfig, content []byte, tim
 		// "sh", "-c", <command> argv triple rather than being pre-wrapped in an
 		// outer `sh -c '...'` string, so we avoid hand-rolled quote escaping.
 		// The only value interpolated into the command is remotePath, which we
-		// control (a /tmp/fleetsh-*.tmp name from os.CreateTemp) and single-quote.
+		// control (a /tmp/fleetsh-<random>.tmp name derived from the local
+		// os.CreateTemp name) and single-quote.
 		args := sshArgs(hc)
 		args = append(args, "sh", "-c", buildRemoteCommand(remotePath))
 
