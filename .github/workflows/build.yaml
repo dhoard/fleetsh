@@ -28,4 +28,4 @@ jobs:
         run: command -v goreleaser || go install github.com/goreleaser/goreleaser/v2@v2.13.0
 
       - name: Build, test, vet, package
-        run: ./build-and-package.sh release
+        run: ./build-and-package.sh

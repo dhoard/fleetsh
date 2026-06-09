@@ -68,31 +68,22 @@ go vet ./...
 
 cd "${scriptdir}"
 
-case "${1:-}" in
-    release)
-        echo "==> Building release (all targets)..."
-        goreleaser release --clean --snapshot --skip=publish
+echo "==> Building release (all targets)..."
+goreleaser release --clean --snapshot --skip=publish
 
-        rm -rf "${scriptdir}/package"
-        mkdir -p "${scriptdir}/package"
+# --- package ---
 
-        for archive in "${scriptdir}/dist"/*.tar.gz; do
-            if [ -f "$archive" ]; then
-                filename=$(basename "$archive")
-                cp "$archive" "${scriptdir}/package/"
-                (cd "${scriptdir}/package" && sha256sum "$filename" > "${filename}.sha256")
-            fi
-        done
+rm -rf "${scriptdir}/package"
+mkdir -p "${scriptdir}/package"
 
-        echo ""
-        echo "Packaged:"
-        ls -lah "${scriptdir}/package/"
-        ;;
-    *)
-        echo "==> Building (single target)..."
-        goreleaser build --single-target --snapshot --clean
-        echo ""
-        echo "Built:"
-        ls -la dist/
-        ;;
-esac
+for archive in "${scriptdir}/dist"/*.tar.gz; do
+    if [ -f "$archive" ]; then
+        filename=$(basename "$archive")
+        cp "$archive" "${scriptdir}/package/"
+        (cd "${scriptdir}/package" && sha256sum "$filename" > "${filename}.sha256")
+    fi
+done
+
+echo ""
+echo "Packaged:"
+ls -lah "${scriptdir}/package/"
