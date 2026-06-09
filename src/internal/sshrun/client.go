@@ -154,12 +154,44 @@ func uploadScript(ctx context.Context, hc HostConfig, content []byte) (string, e
 
 	cmd := exec.CommandContext(ctx, "scp", scpArgs(hc, localPath, remotePath)...)
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("scp failed: %w", err)
+		scpErr := err
+
+		homeDir, mkdirErr := createRemoteFallbackDir(ctx, hc)
+		if mkdirErr != nil {
+			return "", fmt.Errorf("scp to /tmp failed (%w) and could not create remote ~/.tmp (%v)", scpErr, mkdirErr)
+		}
+
+		fallbackPath := homeDir + "/.tmp/fleetsh-" + uniqueID + ".tmp"
+		cmd = exec.CommandContext(ctx, "scp", scpArgs(hc, localPath, fallbackPath)...)
+		if err := cmd.Run(); err != nil {
+			return "", fmt.Errorf("scp to /tmp failed (%w) and scp to %s also failed (%v)", scpErr, fallbackPath, err)
+		}
+
+		os.Remove(localPath)
+		return fallbackPath, nil
 	}
 
 	os.Remove(localPath)
 
 	return remotePath, nil
+}
+
+func createRemoteFallbackDir(ctx context.Context, hc HostConfig) (string, error) {
+	args := sshArgs(hc)
+	args = append(args, "sh", "-c", "mkdir -p ~/.tmp && echo $HOME")
+
+	cmd := exec.CommandContext(ctx, "ssh", args...)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("ssh mkdir ~/.tmp failed: %w", err)
+	}
+
+	home := strings.TrimSpace(string(out))
+	if home == "" {
+		return "", fmt.Errorf("ssh mkdir ~/.tmp: empty home directory")
+	}
+
+	return home, nil
 }
 
 func executeRemoteScript(ctx context.Context, hc HostConfig, content []byte, timeout time.Duration, noTrunc bool) <-chan StreamEvent {
