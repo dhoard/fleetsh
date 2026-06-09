@@ -44,8 +44,8 @@ func TestVersion(t *testing.T) {
 	if version == "" {
 		t.Error("version should not be empty")
 	}
-	if version != "0.0.1" {
-		t.Errorf("version = %q, want %q", version, "0.0.1")
+	if version != "0.0.2" {
+		t.Errorf("version = %q, want %q", version, "0.0.2")
 	}
 }
 
@@ -57,8 +57,8 @@ func TestVersionFlag(t *testing.T) {
 		args    []string
 		wantOut string
 	}{
-		{"-v flag", []string{"-v"}, "fleetsh v0.0.1\n"},
-		{"--version flag", []string{"--version"}, "fleetsh v0.0.1\n"},
+		{"-v flag", []string{"-v"}, "fleetsh v0.0.2\n"},
+		{"--version flag", []string{"--version"}, "fleetsh v0.0.2\n"},
 	}
 
 	for _, tt := range tests {
