@@ -221,6 +221,254 @@ func TestStreamJSONError(t *testing.T) {
 	assert.Equal(t, "timeout", errorEvent.Error)
 }
 
+func TestStreamTextPingEvent(t *testing.T) {
+	// Ping events use "ping" type and print an extra line of stats.
+	events := make(chan sshrun.StreamEvent, 10)
+	go func() {
+		events <- sshrun.StreamEvent{
+			Host: "h1", Type: "ping",
+			Line:     "min=1.000ms avg=2.000ms max=3.000ms ok=3 failed=0 total=3",
+			Done:     true, Success: true, ExitCode: 0,
+			Duration: 3 * time.Second,
+		}
+		close(events)
+	}()
+
+	var buf bytes.Buffer
+	StreamText(&buf, "", "", events, 16, time.Now())
+
+	output := buf.String()
+	assert.Contains(t, output, "min=1.000ms")
+	assert.Contains(t, output, "| exit=0 duration=3s")
+}
+
+func TestStreamTextPingNoLine(t *testing.T) {
+	// Ping event with empty Line should skip the extra stats line.
+	events := make(chan sshrun.StreamEvent, 10)
+	go func() {
+		events <- sshrun.StreamEvent{
+			Host: "h1", Type: "ping",
+			Done: true, Success: false, ExitCode: 1,
+			Duration: 50 * time.Millisecond,
+		}
+		close(events)
+	}()
+
+	var buf bytes.Buffer
+	StreamText(&buf, "", "", events, 16, time.Now())
+
+	output := buf.String()
+	assert.Contains(t, output, "| exit=1 duration=50ms")
+	assert.NotContains(t, output, "min=")
+}
+
+func TestStreamTextVersionAndWarning(t *testing.T) {
+	events := make(chan sshrun.StreamEvent, 2)
+	go func() {
+		events <- sshrun.StreamEvent{Host: "h1", Done: true, Success: true, ExitCode: 0, Duration: 1 * time.Millisecond}
+		close(events)
+	}()
+
+	var buf bytes.Buffer
+	StreamText(&buf, "fleetsh v1.0", "WARNING: test", events, 16, time.Now())
+
+	output := buf.String()
+	assert.Contains(t, output, "fleetsh v1.0")
+	assert.Contains(t, output, "WARNING: test")
+}
+
+func TestStreamTextNilWriter(t *testing.T) {
+	// Passing nil writer should default to os.Stdout without panicking.
+	events := make(chan sshrun.StreamEvent, 2)
+	go func() {
+		events <- sshrun.StreamEvent{Host: "h1", Done: true, Success: true, ExitCode: 0, Duration: 1 * time.Millisecond}
+		close(events)
+	}()
+
+	// Should not panic.
+	results := StreamText(nil, "", "", events, 16, time.Now())
+	assert.Len(t, results, 1)
+}
+
+func TestStreamJSONVersionAndWarning(t *testing.T) {
+	events := make(chan sshrun.StreamEvent, 2)
+	go func() {
+		events <- sshrun.StreamEvent{Host: "h1", Done: true, Success: true, ExitCode: 0, Duration: 1 * time.Millisecond}
+		close(events)
+	}()
+
+	var buf bytes.Buffer
+	StreamJSON(&buf, "fleetsh v1.0", "WARNING: test", events, time.Now())
+
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+
+	var info ndjsonInfo
+	require.NoError(t, json.Unmarshal([]byte(lines[0]), &info))
+	assert.Equal(t, "info", info.Type)
+	assert.Equal(t, "fleetsh v1.0", info.Message)
+
+	var warn ndjsonWarning
+	require.NoError(t, json.Unmarshal([]byte(lines[1]), &warn))
+	assert.Equal(t, "warning", warn.Type)
+	assert.Equal(t, "WARNING: test", warn.Message)
+}
+
+func TestStreamJSONPingEvent(t *testing.T) {
+	events := make(chan sshrun.StreamEvent, 10)
+	go func() {
+		events <- sshrun.StreamEvent{
+			Host: "h1", Type: "ping",
+			Line:     "min=1ms avg=2ms max=3ms",
+			Done:     true, Success: true, ExitCode: 0,
+			Duration: 3 * time.Second,
+		}
+		close(events)
+	}()
+
+	var buf bytes.Buffer
+	StreamJSON(&buf, "", "", events, time.Now())
+
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	var doneEvent ndjsonEvent
+	require.NoError(t, json.Unmarshal([]byte(lines[0]), &doneEvent))
+	assert.Equal(t, "done", doneEvent.Type)
+	assert.Equal(t, "min=1ms avg=2ms max=3ms", doneEvent.Line)
+}
+
+func TestStreamJSONNilWriter(t *testing.T) {
+	events := make(chan sshrun.StreamEvent, 2)
+	go func() {
+		events <- sshrun.StreamEvent{Host: "h1", Done: true, Success: true, ExitCode: 0, Duration: 1 * time.Millisecond}
+		close(events)
+	}()
+
+	// Should not panic.
+	results := StreamJSON(nil, "", "", events, time.Now())
+	assert.Len(t, results, 1)
+}
+
+func TestStreamTextIncompleteHost(t *testing.T) {
+	// A host emits stdout lines but never a Done event.
+	// The trailing partial result should still be appended.
+	events := make(chan sshrun.StreamEvent, 10)
+	go func() {
+		events <- sshrun.StreamEvent{Host: "h1", Line: "partial output"}
+		events <- sshrun.StreamEvent{Host: "h2", Done: true, Success: true, ExitCode: 0, Duration: 1 * time.Millisecond}
+		close(events)
+	}()
+
+	var buf bytes.Buffer
+	results := StreamText(&buf, "", "", events, 16, time.Now())
+
+	assert.Len(t, results, 2)
+	// The incomplete host (h1) should be last since h2 completed first
+	output := buf.String()
+	assert.Contains(t, output, "partial output")
+}
+
+func TestStreamJSONIncompleteHost(t *testing.T) {
+	events := make(chan sshrun.StreamEvent, 10)
+	go func() {
+		events <- sshrun.StreamEvent{Host: "h1", Line: "partial output"}
+		events <- sshrun.StreamEvent{Host: "h2", Done: true, Success: true, ExitCode: 0, Duration: 1 * time.Millisecond}
+		close(events)
+	}()
+
+	var buf bytes.Buffer
+	results := StreamJSON(&buf, "", "", events, time.Now())
+
+	assert.Len(t, results, 2)
+}
+
+func TestStreamJSON_OutputExactStability(t *testing.T) {
+	// Captures the exact JSON output of StreamJSON with a fixed event sequence
+	// and asserts byte-identical output after buffering changes.
+	events := make(chan sshrun.StreamEvent, 20)
+	go func() {
+		events <- sshrun.StreamEvent{Host: "h1", Group: "g1", Line: "stdout line 1"}
+		events <- sshrun.StreamEvent{Host: "h1", Group: "g1", Line: "stderr line", Stderr: true}
+		events <- sshrun.StreamEvent{Host: "h1", Group: "g1", Done: true, Success: true, ExitCode: 0, Duration: 50 * time.Millisecond}
+		events <- sshrun.StreamEvent{Host: "h2", Group: "g2", Error: "conn refused"}
+		events <- sshrun.StreamEvent{Host: "h2", Group: "g2", Done: true, Success: false, ExitCode: 1, Duration: 100 * time.Millisecond}
+		close(events)
+	}()
+
+	var buf bytes.Buffer
+	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	results := StreamJSON(&buf, "fleetsh v0.1", "warn-msg", events, start)
+
+	output := buf.String()
+	lines := strings.Split(strings.TrimRight(output, "\n"), "\n")
+
+	// Expected: info, warning, stdout, stderr, done(h1), error, done(h2), summary
+	require.Len(t, lines, 8, "expected 8 NDJSON lines")
+
+	// Line 0: info
+	var info ndjsonInfo
+	require.NoError(t, json.Unmarshal([]byte(lines[0]), &info))
+	assert.Equal(t, "fleetsh", info.Source)
+	assert.Equal(t, "info", info.Type)
+	assert.Equal(t, "fleetsh v0.1", info.Message)
+
+	// Line 1: warning
+	var warn ndjsonWarning
+	require.NoError(t, json.Unmarshal([]byte(lines[1]), &warn))
+	assert.Equal(t, "warning", warn.Type)
+	assert.Equal(t, "warn-msg", warn.Message)
+
+	// Line 2: stdout
+	var stdoutEv ndjsonEvent
+	require.NoError(t, json.Unmarshal([]byte(lines[2]), &stdoutEv))
+	assert.Equal(t, "stdout", stdoutEv.Type)
+	assert.Equal(t, "h1", stdoutEv.Host)
+	assert.Equal(t, "g1", stdoutEv.Group)
+	assert.Equal(t, "stdout line 1", stdoutEv.Line)
+
+	// Line 3: stderr
+	var stderrEv ndjsonEvent
+	require.NoError(t, json.Unmarshal([]byte(lines[3]), &stderrEv))
+	assert.Equal(t, "stderr", stderrEv.Type)
+	assert.Equal(t, "stderr line", stderrEv.Line)
+
+	// Line 4: done h1
+	var doneH1 ndjsonEvent
+	require.NoError(t, json.Unmarshal([]byte(lines[4]), &doneH1))
+	assert.Equal(t, "done", doneH1.Type)
+	assert.Equal(t, "h1", doneH1.Host)
+	assert.Equal(t, 0, doneH1.ExitCode)
+	assert.Equal(t, int64(50), doneH1.DurationMs)
+
+	// Line 5: error h2
+	var errEv ndjsonEvent
+	require.NoError(t, json.Unmarshal([]byte(lines[5]), &errEv))
+	assert.Equal(t, "error", errEv.Type)
+	assert.Equal(t, "conn refused", errEv.Error)
+
+	// Line 6: done h2
+	var doneH2 ndjsonEvent
+	require.NoError(t, json.Unmarshal([]byte(lines[6]), &doneH2))
+	assert.Equal(t, "done", doneH2.Type)
+	assert.Equal(t, "h2", doneH2.Host)
+	assert.Equal(t, 1, doneH2.ExitCode)
+	assert.Equal(t, int64(100), doneH2.DurationMs)
+
+	// Line 7: summary
+	var summary ndjsonSummary
+	require.NoError(t, json.Unmarshal([]byte(lines[7]), &summary))
+	assert.Equal(t, "fleetsh", summary.Source)
+	assert.Equal(t, "summary", summary.Type)
+	assert.Equal(t, 1, summary.OK)
+	assert.Equal(t, 1, summary.Failed)
+	assert.Equal(t, 2, summary.Total)
+
+	// Verify Result accumulation
+	require.Len(t, results, 2)
+	assert.Equal(t, "stdout line 1\n", results[0].Stdout)
+	assert.Equal(t, "stderr line\n", results[0].Stderr)
+	assert.Equal(t, "", results[1].Stdout)
+	assert.Equal(t, "", results[1].Stderr)
+}
+
 func TestStreamJSONMultipleHosts(t *testing.T) {
 	events := make(chan sshrun.StreamEvent, 10)
 	go func() {
@@ -243,4 +491,58 @@ func TestStreamJSONMultipleHosts(t *testing.T) {
 	assert.Equal(t, 2, summary.OK)
 	assert.Equal(t, 0, summary.Failed)
 	assert.Equal(t, 2, summary.Total)
+}
+
+func TestStreamText_TrailingPartialHost(t *testing.T) {
+	// A host emits stdout lines but no Done event, and is the last host in the
+	// channel. The trailing current != nil block must finalize and append it.
+	events := make(chan sshrun.StreamEvent, 10)
+	go func() {
+		events <- sshrun.StreamEvent{Host: "h1", Line: "line1"}
+		events <- sshrun.StreamEvent{Host: "h1", Line: "line2"}
+		close(events)
+	}()
+
+	var buf bytes.Buffer
+	results := StreamText(&buf, "", "", events, 16, time.Now())
+
+	require.Len(t, results, 1)
+	assert.Equal(t, "h1", results[0].Host)
+	assert.Equal(t, "line1\nline2\n", results[0].Stdout)
+	assert.Empty(t, results[0].Stderr)
+}
+
+func TestStreamText_TrailingPartialHostStderr(t *testing.T) {
+	// A host emits stderr lines only, no Done event, last in channel.
+	events := make(chan sshrun.StreamEvent, 10)
+	go func() {
+		events <- sshrun.StreamEvent{Host: "h1", Line: "err1", Stderr: true}
+		close(events)
+	}()
+
+	var buf bytes.Buffer
+	results := StreamText(&buf, "", "", events, 16, time.Now())
+
+	require.Len(t, results, 1)
+	assert.Equal(t, "err1\n", results[0].Stderr)
+	assert.Empty(t, results[0].Stdout)
+}
+
+func TestStreamJSON_TrailingPartialHost(t *testing.T) {
+	// A host emits stdout/stderr lines but no Done event, last in channel.
+	events := make(chan sshrun.StreamEvent, 10)
+	go func() {
+		events <- sshrun.StreamEvent{Host: "h1", Group: "g1", Line: "out1"}
+		events <- sshrun.StreamEvent{Host: "h1", Group: "g1", Line: "err1", Stderr: true}
+		close(events)
+	}()
+
+	var buf bytes.Buffer
+	results := StreamJSON(&buf, "", "", events, time.Now())
+
+	require.Len(t, results, 1)
+	assert.Equal(t, "h1", results[0].Host)
+	assert.Equal(t, "g1", results[0].Group)
+	assert.Equal(t, "out1\n", results[0].Stdout)
+	assert.Equal(t, "err1\n", results[0].Stderr)
 }
