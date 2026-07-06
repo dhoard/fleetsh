@@ -3,7 +3,7 @@
 Analyze the target module for correctness issues and potential bugs.
 Produce findings only. Do not write or modify any code.
 
-<!-- ARGUMENTS: user-provided input such as file paths, package names, or scope constraints -->
+$ARGUMENTS
 
 ## Objective
 

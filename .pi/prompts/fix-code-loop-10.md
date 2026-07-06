@@ -6,7 +6,7 @@ sequence within each loop, resolve any issues found, and repeat until ten
 loops have completed or no issues remain. Produce only the final code
 changes and supporting documents.
 
-<!-- ARGUMENTS: user-provided input such as file paths, package names, or scope constraints -->
+$ARGUMENTS
 
 ## Execution Boundary
 

@@ -3,7 +3,7 @@
 Convert a design plan into a detailed implementation specification.
 Produce only the specification document.
 
-<!-- ARGUMENTS: user-provided input such as file paths, package names, or scope constraints -->
+$ARGUMENTS
 
 ## Execution Boundary
 

@@ -3,7 +3,7 @@
 Produce a design plan document for the given problem. Produce only the
 design plan.
 
-<!-- ARGUMENTS: user-provided input such as file paths, package names, or scope constraints -->
+$ARGUMENTS
 
 ## Execution Boundary
 

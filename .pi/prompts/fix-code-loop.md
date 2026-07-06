@@ -4,7 +4,7 @@ Run one complete loop of analysis → design → specification → implementatio
 on a target module. Execute each phase in sequence, resolve any issues
 found, and produce only the final code changes and supporting documents.
 
-<!-- ARGUMENTS: user-provided input such as file paths, package names, or scope constraints -->
+$ARGUMENTS
 
 ## Execution Boundary
 

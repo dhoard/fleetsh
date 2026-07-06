@@ -3,7 +3,7 @@
 Implement the implementation specification exactly. Do not deviate.
 Do not add unrelated changes.
 
-<!-- ARGUMENTS: user-provided input such as file paths, package names, or scope constraints -->
+$ARGUMENTS
 
 ## Objective
 
