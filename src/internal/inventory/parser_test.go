@@ -173,6 +173,21 @@ func TestParseHostWithoutUserWithPort(t *testing.T) {
 	assert.Equal(t, 2222, h.Port)
 }
 
+func TestParseHostEmptyUser(t *testing.T) {
+	// Address like "@host" — atIdx >= 0 but userPart is empty.
+	content := "web01 @web01.example.com\n"
+	path := writeTempInventory(t, content)
+	defer os.Remove(path)
+
+	inv, err := Parse(path)
+	require.NoError(t, err)
+
+	h := inv.Aliases["web01"]
+	assert.Equal(t, "web01", h.Alias)
+	assert.Empty(t, h.User)
+	assert.Equal(t, "web01.example.com", h.Name)
+}
+
 func TestParseHostAliasOnly(t *testing.T) {
 	content := `localhost
 `
@@ -391,6 +406,66 @@ runner!1
 	_, err := Parse(path)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid alias")
+}
+
+func TestParsePortInvalid(t *testing.T) {
+	tests := []struct {
+		name string
+		port string
+	}{
+		{"non-numeric", "abc"},
+		{"mixed", "22ab"},
+		{"out of range", "70000"},
+		{"zero", "0"},
+		{"negative sign", "-1"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := parsePort(tt.port)
+			assert.Error(t, err)
+		})
+	}
+}
+
+func TestDisplayNameEmptyAlias(t *testing.T) {
+	h := &Host{Name: "bare.example.com"}
+	assert.Equal(t, "bare.example.com", h.DisplayName())
+}
+
+func TestParseHostDefinition_EmptyArgs(t *testing.T) {
+	// A line with only double-quotes produces zero parseSSHArgs tokens,
+	// exercising the len(args) == 0 branch in parseHostDefinition.
+	// The caller (Parse) will reject it as an invalid alias.
+	content := `""`
+	path := writeTempInventory(t, content)
+
+	_, err := Parse(path)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid alias")
+}
+
+func TestParseHostDefinition_WhitespaceOnlyLine(t *testing.T) {
+	// Whitespace-only lines in the host section are trimmed to empty and
+	// skipped by Parse, so parseHostDefinition is never called.
+	// Verify this doesn't error.
+	content := "   \t  \n"
+	path := writeTempInventory(t, content)
+
+	inv, err := Parse(path)
+	require.NoError(t, err)
+	assert.Empty(t, inv.Aliases)
+}
+
+func TestParseScannerError(t *testing.T) {
+	// Verify the scanner.Err() path by reading from a directory (not a
+	// regular file). os.Open succeeds on directories but bufio.Scanner
+	// will fail on Read.
+	tmpDir := t.TempDir()
+
+	_, err := Parse(tmpDir)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "error reading inventory file")
 }
 
 func writeTempInventory(t *testing.T, content string) string {

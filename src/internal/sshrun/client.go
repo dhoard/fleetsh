@@ -16,6 +16,7 @@ package sshrun
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -39,6 +40,21 @@ type HostConfig struct {
 // bufio.Scanner limit is 64KB, which silently truncates long lines (e.g. base64
 // blobs or minified output); raise it so realistic output is captured intact.
 const maxScanLineSize = 1024 * 1024
+
+// streamReadChunkSize is the size of the scratch buffer passed to
+// bufio.Reader.Read and the bufio reader itself. Matches typical OS pipe
+// buffers so each Read returns in a single syscall.
+const streamReadChunkSize = 64 * 1024
+
+// readBufPool reuses 64KB byte slices for streamReader, avoiding a heap
+// allocation per host. The pool is safe for concurrent use; each goroutine
+// acquires its own slice and returns it when done.
+var readBufPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, streamReadChunkSize)
+		return &b
+	},
+}
 
 // sshArgs builds the argument list for the ssh client. All client options
 // (port, connection options, and inventory-supplied SSH args) must precede the
@@ -290,56 +306,78 @@ func streamPipes(cmd *exec.Cmd, ch chan<- StreamEvent, stdoutPipe, stderrPipe io
 	ch <- event
 }
 
+// emitLine sends a single StreamEvent for a completed logical line.
+func emitLine(ch chan<- StreamEvent, displayName string, isStderr bool, line []byte, truncated bool) {
+	if len(line) == 0 {
+		return
+	}
+	if truncated {
+		ch <- StreamEvent{Host: displayName, Line: string(line) + " (truncated)", Stderr: isStderr}
+	} else {
+		ch <- StreamEvent{Host: displayName, Line: string(line), Stderr: isStderr}
+	}
+}
+
+// streamReader reads from r in streamReadChunkSize chunks, splits on newlines,
+// and emits one StreamEvent per logical line. A final line without a trailing
+// newline is flushed at EOF. Lines longer than maxScanLineSize are capped and
+// marked "(truncated)".
 func streamReader(r io.Reader, ch chan<- StreamEvent, displayName string, isStderr bool, noTrunc bool) {
-	reader := bufio.NewReaderSize(r, 64*1024)
+	bufp := readBufPool.Get().(*[]byte)
+	buf := *bufp
+	defer readBufPool.Put(bufp)
+
+	reader := bufio.NewReaderSize(r, streamReadChunkSize)
 	line := make([]byte, 0, 1024)
-	buf := make([]byte, maxScanLineSize)
 	truncated := false
 
 	for {
 		n, err := reader.Read(buf)
 		if n == 0 && err == io.EOF {
-			if len(line) > 0 {
-				if truncated {
-					ch <- StreamEvent{Host: displayName, Line: string(line) + " (truncated)", Stderr: isStderr}
-				} else {
-					ch <- StreamEvent{Host: displayName, Line: string(line), Stderr: isStderr}
-				}
-			}
+			emitLine(ch, displayName, isStderr, line, truncated)
 			break
 		}
 		if err != nil {
-			if len(line) > 0 {
-				if truncated {
-					ch <- StreamEvent{Host: displayName, Line: string(line) + " (truncated)", Stderr: isStderr}
-				} else {
-					ch <- StreamEvent{Host: displayName, Line: string(line), Stderr: isStderr}
-				}
-			}
+			emitLine(ch, displayName, isStderr, line, truncated)
 			ch <- StreamEvent{Host: displayName, Error: "read error: " + err.Error(), Stderr: true}
 			break
 		}
 
 		data := buf[:n]
-		for i := 0; i < len(data); i++ {
-			if data[i] == '\n' {
-				if len(line) > 0 {
-					if truncated {
-						ch <- StreamEvent{Host: displayName, Line: string(line) + " (truncated)", Stderr: isStderr}
-					} else {
-						ch <- StreamEvent{Host: displayName, Line: string(line), Stderr: isStderr}
-					}
-					line = line[:0]
-					truncated = false
-				}
-			} else {
+		off := 0
+		for off < len(data) {
+			rel := bytes.IndexByte(data[off:], '\n')
+			if rel < 0 {
+				// No newline in remainder: belongs to the open line.
+				seg := data[off:]
 				if !truncated {
-					line = append(line, data[i])
-					if !noTrunc && len(line) > maxScanLineSize {
+					if !noTrunc && len(line)+len(seg) > maxScanLineSize+1 {
+						seg = seg[:maxScanLineSize+1-len(line)]
+						line = append(line, seg...)
 						truncated = true
+					} else {
+						line = append(line, seg...)
 					}
+				}
+				break
+			}
+			// Bytes [off, off+rel) belong to the current line.
+			seg := data[off : off+rel]
+			if !truncated {
+				if !noTrunc && len(line)+len(seg) > maxScanLineSize+1 {
+					seg = seg[:maxScanLineSize+1-len(line)]
+					line = append(line, seg...)
+					truncated = true
+				} else {
+					line = append(line, seg...)
 				}
 			}
+			if len(line) > 0 {
+				emitLine(ch, displayName, isStderr, line, truncated)
+				line = line[:0]
+				truncated = false
+			}
+			off += rel + 1
 		}
 	}
 }

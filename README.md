@@ -49,7 +49,7 @@ Exactly one of `--command`, `--script`, or `--ping` must be provided.
 Text output uses an aligned host prefix followed by a symbol indicating the type of line:
 
 ```
-info      | fleetsh v0.0.1          version info (literal "info" prefix)
+info      | fleetsh v0.0.2          version info (literal "info" prefix)
 host      * line                    stdout from remote host
 host      ! line                    stderr from remote host
 host      ! message                 connection or execution error
@@ -59,7 +59,7 @@ summary   | ok=N failed=N total=N exit=N duration=Nms
 
 Example:
 ```
-info      | fleetsh v0.0.1
+info      | fleetsh v0.0.2
 runner-1  * Linux 5.15.0-generic
 runner-1  ! CPU: 2 cores, Load: 0.12
 runner-1  | exit=0 duration=123ms
@@ -157,7 +157,7 @@ fleetsh -g all --ping -l 20           # ping with 20 concurrent hosts
 
 Output:
 ```
-info      | fleetsh v0.0.1
+info      | fleetsh v0.0.2
 runner-1  | min=0.500ms avg=0.750ms max=1.200ms ok=3 failed=0 total=3
 runner-1  | exit=0 duration=5ms
 summary   | ok=1 failed=0 total=1 exit=0 duration=8ms
@@ -187,7 +187,7 @@ fleetsh -g all -c "uname -a" --json
 Output is NDJSON (newline-delimited JSON) with streaming events. Each line is a separate JSON object:
 
 ```json
-{"source":"fleetsh","type":"info","message":"fleetsh v0.0.1"}
+{"source":"fleetsh","type":"info","message":"fleetsh v0.0.2"}
 {"source":"host","host":"runner-1","group":"all","type":"stdout","line":"Linux runner-1 5.15.0"}
 {"source":"host","host":"runner-1","group":"all","type":"done","exit_code":0,"duration_ms":123}
 {"source":"fleetsh","type":"summary","ok":1,"failed":0,"total":1,"duration_ms":150}

@@ -268,8 +268,15 @@ func doICMPPing(ctx context.Context, host string, count int) (success bool, line
 	return true, fmt.Sprintf("min=%.3fms avg=%.3fms max=%.3fms ok=%d failed=%d total=%d", minMs, avgMs, maxMs, ok, failed, stats.PacketsSent), 0, false
 }
 
+// tcpPingPorts lists ports to probe in order during TCP ping. Exposed as a
+var tcpPingPorts = []int{22, 80, 443, 8080}
+
 func doTCPPing(ctx context.Context, host string, count int) (bool, string, int) {
-	ports := []int{22, 80, 443, 8080}
+	// Precompute dial addresses once per host (not per attempt).
+	addrs := make([]string, len(tcpPingPorts))
+	for i, port := range tcpPingPorts {
+		addrs[i] = fmt.Sprintf("%s:%d", host, port)
+	}
 	var times []time.Duration
 
 	var dialer net.Dialer
@@ -277,10 +284,10 @@ func doTCPPing(ctx context.Context, host string, count int) (bool, string, int) 
 		if ctx.Err() != nil {
 			break
 		}
-		for _, port := range ports {
+		for _, addr := range addrs {
 			start := time.Now()
 			dialCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			conn, err := dialer.DialContext(dialCtx, "tcp", fmt.Sprintf("%s:%d", host, port))
+			conn, err := dialer.DialContext(dialCtx, "tcp", addr)
 			cancel()
 			dur := time.Since(start)
 			if err == nil {

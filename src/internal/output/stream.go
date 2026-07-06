@@ -15,12 +15,14 @@
 package output
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/dhoard/fleetsh/internal/sshrun"
 )
@@ -28,6 +30,13 @@ import (
 // alignPrefix pads or truncates s to exactly width display columns, counting by
 // runes so multibyte UTF-8 characters are never split mid-rune.
 func alignPrefix(s string, width int) string {
+	if len(s) == utf8.RuneCountInString(s) {
+		// ASCII fast path: byte length == rune count.
+		if len(s) >= width {
+			return s[:width]
+		}
+		return s + strings.Repeat(" ", width-len(s))
+	}
 	runes := []rune(s)
 	if len(runes) >= width {
 		return string(runes[:width])
@@ -35,27 +44,56 @@ func alignPrefix(s string, width int) string {
 	return s + strings.Repeat(" ", width-len(runes))
 }
 
+// hostAccum pairs a Result with strings.Builder for efficient line
+type hostAccum struct {
+	res    *sshrun.Result
+	stdout strings.Builder
+	stderr strings.Builder
+}
+
+// finalize writes the accumulated stdout/stderr into the Result fields.
+func (a *hostAccum) finalize() {
+	a.res.Stdout = a.stdout.String()
+	a.res.Stderr = a.stderr.String()
+}
+
 func StreamText(w io.Writer, version string, warning string, events <-chan sshrun.StreamEvent, maxLen int, start time.Time) []*sshrun.Result {
 	if w == nil {
 		w = os.Stdout
 	}
 
+	alignCache := make(map[string]string)
+	align := func(host string) string {
+		if cached, ok := alignCache[host]; ok {
+			return cached
+		}
+		padded := alignPrefix(host, maxLen)
+		alignCache[host] = padded
+		return padded
+	}
+
+	bw := bufio.NewWriterSize(w, 64*1024)
+	defer bw.Flush()
+
 	if version != "" {
-		fmt.Fprintf(w, "%s | %s\n", alignPrefix("info", maxLen), version)
+		fmt.Fprintf(bw, "%s | %s\n", align("info"), version)
 	}
 	if warning != "" {
-		fmt.Fprintf(w, "%s | %s\n", alignPrefix("WARNING", maxLen), warning)
+		fmt.Fprintf(bw, "%s | %s\n", align("WARNING"), warning)
 	}
 
 	var results []*sshrun.Result
 	var current *sshrun.Result
+	var accum *hostAccum
 
 	for ev := range events {
 		if current == nil || current.Host != ev.Host {
 			if current != nil {
+				accum.finalize()
 				results = append(results, current)
 			}
 			current = &sshrun.Result{Host: ev.Host, Group: ev.Group}
+			accum = &hostAccum{res: current}
 		}
 
 		if ev.Done {
@@ -63,27 +101,32 @@ func StreamText(w io.Writer, version string, warning string, events <-chan sshru
 			current.ExitCode = ev.ExitCode
 			current.Error = ev.Error
 			current.Duration = ev.Duration
+			accum.finalize()
 			results = append(results, current)
 			current = nil
+			accum = nil
 
 			if ev.Type == "ping" && ev.Line != "" {
-				fmt.Fprintf(w, "%s | %s\n", alignPrefix(ev.Host, maxLen), ev.Line)
-				fmt.Fprintf(w, "%s | exit=%d duration=%s\n", alignPrefix(ev.Host, maxLen), ev.ExitCode, formatDuration(ev.Duration))
+				fmt.Fprintf(bw, "%s | %s\n", align(ev.Host), ev.Line)
+				fmt.Fprintf(bw, "%s | exit=%d duration=%s\n", align(ev.Host), ev.ExitCode, formatDuration(ev.Duration))
 			} else {
-				fmt.Fprintf(w, "%s | exit=%d duration=%s\n", alignPrefix(ev.Host, maxLen), ev.ExitCode, formatDuration(ev.Duration))
+				fmt.Fprintf(bw, "%s | exit=%d duration=%s\n", align(ev.Host), ev.ExitCode, formatDuration(ev.Duration))
 			}
 		} else if ev.Error != "" {
-			fmt.Fprintf(w, "%s ! %s\n", alignPrefix(ev.Host, maxLen), ev.Error)
+			fmt.Fprintf(bw, "%s ! %s\n", align(ev.Host), ev.Error)
 		} else if ev.Stderr {
-			fmt.Fprintf(w, "%s ! %s\n", alignPrefix(ev.Host, maxLen), ev.Line)
-			current.Stderr += ev.Line + "\n"
+			fmt.Fprintf(bw, "%s ! %s\n", align(ev.Host), ev.Line)
+			accum.stderr.WriteString(ev.Line)
+			accum.stderr.WriteByte('\n')
 		} else {
-			fmt.Fprintf(w, "%s * %s\n", alignPrefix(ev.Host, maxLen), ev.Line)
-			current.Stdout += ev.Line + "\n"
+			fmt.Fprintf(bw, "%s * %s\n", align(ev.Host), ev.Line)
+			accum.stdout.WriteString(ev.Line)
+			accum.stdout.WriteByte('\n')
 		}
 	}
 
 	if current != nil {
+		accum.finalize()
 		results = append(results, current)
 	}
 
@@ -94,7 +137,7 @@ func StreamText(w io.Writer, version string, warning string, events <-chan sshru
 	if summary.Failed > 0 {
 		summaryExit = 1
 	}
-	fmt.Fprintf(w, "%s | ok=%d failed=%d total=%d exit=%d duration=%dms\n", alignPrefix("summary", maxLen), summary.OK, summary.Failed, summary.Total, summaryExit, summary.Duration.Milliseconds())
+	fmt.Fprintf(bw, "%s | ok=%d failed=%d total=%d exit=%d duration=%dms\n", align("summary"), summary.OK, summary.Failed, summary.Total, summaryExit, summary.Duration.Milliseconds())
 
 	return results
 }
@@ -136,7 +179,12 @@ func StreamJSON(w io.Writer, version string, warning string, events <-chan sshru
 		w = os.Stdout
 	}
 
-	encoder := json.NewEncoder(w)
+	// Buffer the writer to batch write syscalls. Flush errors are ignored
+	// to preserve current behaviour (StreamJSON does not surface writer errors).
+	bw := bufio.NewWriterSize(w, 64*1024)
+	defer bw.Flush()
+
+	encoder := json.NewEncoder(bw)
 
 	if version != "" {
 		encoder.Encode(ndjsonInfo{Source: "fleetsh", Type: "info", Message: version})
@@ -147,13 +195,16 @@ func StreamJSON(w io.Writer, version string, warning string, events <-chan sshru
 
 	var results []*sshrun.Result
 	var current *sshrun.Result
+	var accum *hostAccum
 
 	for ev := range events {
 		if current == nil || current.Host != ev.Host {
 			if current != nil {
+				accum.finalize()
 				results = append(results, current)
 			}
 			current = &sshrun.Result{Host: ev.Host, Group: ev.Group}
+			accum = &hostAccum{res: current}
 		}
 
 		if ev.Done {
@@ -161,8 +212,10 @@ func StreamJSON(w io.Writer, version string, warning string, events <-chan sshru
 			current.ExitCode = ev.ExitCode
 			current.Error = ev.Error
 			current.Duration = ev.Duration
+			accum.finalize()
 			results = append(results, current)
 			current = nil
+			accum = nil
 
 			encoder.Encode(ndjsonEvent{
 				Source:     "host",
@@ -183,7 +236,8 @@ func StreamJSON(w io.Writer, version string, warning string, events <-chan sshru
 				Error:  ev.Error,
 			})
 		} else if ev.Stderr {
-			current.Stderr += ev.Line + "\n"
+			accum.stderr.WriteString(ev.Line)
+			accum.stderr.WriteByte('\n')
 			encoder.Encode(ndjsonEvent{
 				Source: "host",
 				Host:   ev.Host,
@@ -192,7 +246,8 @@ func StreamJSON(w io.Writer, version string, warning string, events <-chan sshru
 				Line:   ev.Line,
 			})
 		} else {
-			current.Stdout += ev.Line + "\n"
+			accum.stdout.WriteString(ev.Line)
+			accum.stdout.WriteByte('\n')
 			encoder.Encode(ndjsonEvent{
 				Source: "host",
 				Host:   ev.Host,
@@ -204,6 +259,7 @@ func StreamJSON(w io.Writer, version string, warning string, events <-chan sshru
 	}
 
 	if current != nil {
+		accum.finalize()
 		results = append(results, current)
 	}
 
