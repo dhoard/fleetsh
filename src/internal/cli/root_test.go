@@ -45,8 +45,8 @@ func TestVersion(t *testing.T) {
 	if version == "" {
 		t.Error("version should not be empty")
 	}
-	if version != "0.0.2" {
-		t.Errorf("version = %q, want %q", version, "0.0.2")
+	if version != "0.0.2-POST" {
+		t.Errorf("version = %q, want %q", version, "0.0.2-POST")
 	}
 }
 
@@ -58,8 +58,8 @@ func TestVersionFlag(t *testing.T) {
 		args    []string
 		wantOut string
 	}{
-		{"-v flag", []string{"-v"}, "fleetsh v0.0.2\n"},
-		{"--version flag", []string{"--version"}, "fleetsh v0.0.2\n"},
+		{"-v flag", []string{"-v"}, "fleetsh v0.0.2-POST\n"},
+		{"--version flag", []string{"--version"}, "fleetsh v0.0.2-POST\n"},
 	}
 
 	for _, tt := range tests {
@@ -96,6 +96,7 @@ func TestBuildRootCmdFlags(t *testing.T) {
 		{"json", "", "false"},
 		{"fail-fast", "", "false"},
 		{"no-trunc", "", "false"},
+		{"tty", "T", "false"},
 	}
 
 	for _, f := range flags {
@@ -871,6 +872,22 @@ func TestRunE_DryRunAliasWithHostname(t *testing.T) {
 	err := cmd.Execute()
 	if err != nil {
 		t.Errorf("expected nil error for dry-run with alias+hostname, got: %v", err)
+	}
+}
+
+func TestRunE_DryRunWithTTY(t *testing.T) {
+	invContent := "web1 admin@10.0.0.1\n"
+	invPath := writeTempInventory(t, invContent)
+
+	cmd := buildRootCmd()
+	cmd.SetArgs([]string{"-i", invPath, "--dry-run", "--tty", "-c", "echo hello", "web1"})
+	out := &strings.Builder{}
+	cmd.SetOut(out)
+	cmd.SetErr(&strings.Builder{})
+
+	err := cmd.Execute()
+	if err != nil {
+		t.Errorf("expected nil error for dry-run with tty, got: %v", err)
 	}
 }
 

@@ -173,3 +173,18 @@ func TestFormatDryRunFormatting(t *testing.T) {
 	assert.Equal(t, "  SSH Args: -o StrictHostKeyChecking=accept-new", lines[4])
 	assert.Equal(t, "  Command: echo hello", lines[5])
 }
+
+func TestFormatDryRun_TTY(t *testing.T) {
+	// FormatDryRun must NOT include a TTY line; TTY is an SSH transport
+	// concern, not a dry-run display concern.
+	hc := HostConfig{
+		Alias:    "web",
+		Hostname: "10.0.0.1",
+		Username: "admin",
+		TTY:      true,
+	}
+
+	out := FormatDryRun(hc, "command", "echo hello")
+	assert.NotContains(t, out, "TTY")
+	assert.NotContains(t, out, "tty")
+}

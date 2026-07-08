@@ -34,6 +34,7 @@ type HostConfig struct {
 	Port     int
 	Username string
 	SSHArgs  []string
+	TTY      bool
 }
 
 // maxScanLineSize bounds a single line of remote stdout/stderr. The default
@@ -63,6 +64,10 @@ var readBufPool = sync.Pool{
 // responsible for appending the single remote-command argument last.
 func sshArgs(hc HostConfig) []string {
 	var args []string
+
+	if hc.TTY {
+		args = append(args, "-tt")
+	}
 
 	if hc.Port != 0 {
 		args = append(args, "-p", fmt.Sprintf("%d", hc.Port))
@@ -308,6 +313,7 @@ func streamPipes(cmd *exec.Cmd, ch chan<- StreamEvent, stdoutPipe, stderrPipe io
 
 // emitLine sends a single StreamEvent for a completed logical line.
 func emitLine(ch chan<- StreamEvent, displayName string, isStderr bool, line []byte, truncated bool) {
+	line = bytes.TrimRight(line, "\r")
 	if len(line) == 0 {
 		return
 	}

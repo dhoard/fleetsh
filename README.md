@@ -29,6 +29,7 @@ fleetsh [alias] [flags]
 | `--fail-fast` | | | Stop scheduling new hosts after first failure |
 | `--dry-run` | | | Print what would run without connecting |
 | `--no-trunc` | | | Disable output line truncation |
+| `--tty` | `-T` | | Allocate a pseudo-TTY for real-time output streaming |
 | `--ping` | `-p` | | Ping hosts (default: 3) (mutually exclusive with -c, -s) |
 | `--help` | | | Help for fleetsh |
 | `--version` | `-v` | | Version for fleetsh |
@@ -49,7 +50,7 @@ Exactly one of `--command`, `--script`, or `--ping` must be provided.
 Text output uses an aligned host prefix followed by a symbol indicating the type of line:
 
 ```
-info      | fleetsh v0.0.2          version info (literal "info" prefix)
+info      | fleetsh v0.0.2-POST     version info (literal "info" prefix)
 host      * line                    stdout from remote host
 host      ! line                    stderr from remote host
 host      ! message                 connection or execution error
@@ -59,7 +60,7 @@ summary   | ok=N failed=N total=N exit=N duration=Nms
 
 Example:
 ```
-info      | fleetsh v0.0.2
+info      | fleetsh v0.0.2-POST
 runner-1  * Linux 5.15.0-generic
 runner-1  ! CPU: 2 cores, Load: 0.12
 runner-1  | exit=0 duration=123ms
@@ -157,7 +158,7 @@ fleetsh -g all --ping -l 20           # ping with 20 concurrent hosts
 
 Output:
 ```
-info      | fleetsh v0.0.2
+info      | fleetsh v0.0.2-POST
 runner-1  | min=0.500ms avg=0.750ms max=1.200ms ok=3 failed=0 total=3
 runner-1  | exit=0 duration=5ms
 summary   | ok=1 failed=0 total=1 exit=0 duration=8ms
@@ -187,7 +188,7 @@ fleetsh -g all -c "uname -a" --json
 Output is NDJSON (newline-delimited JSON) with streaming events. Each line is a separate JSON object:
 
 ```json
-{"source":"fleetsh","type":"info","message":"fleetsh v0.0.2"}
+{"source":"fleetsh","type":"info","message":"fleetsh v0.0.2-POST"}
 {"source":"host","host":"runner-1","group":"all","type":"stdout","line":"Linux runner-1 5.15.0"}
 {"source":"host","host":"runner-1","group":"all","type":"done","exit_code":0,"duration_ms":123}
 {"source":"fleetsh","type":"summary","ok":1,"failed":0,"total":1,"duration_ms":150}
@@ -201,6 +202,26 @@ Event types:
 - `done` - host completed with exit_code and duration_ms
 - `warning` - warning message
 - `summary` - final summary with ok/failed/total counts
+
+## Real-Time Output Streaming (TTY)
+
+Remote programs typically block-buffer stdout when connected to a pipe (not a TTY). This means output may be delayed until the program exits, even for long-running processes that produce periodic output.
+
+The `--tty` flag forces pseudo-TTY allocation on the remote host via `ssh -tt`. When a PTY is attached, most programs switch to line-buffered output, enabling real-time streaming.
+
+```bash
+# Without --tty: output may be delayed (programs block-buffer to pipes)
+fleetsh -g runners -c "node app.js"
+
+# With --tty: real-time streaming (programs line-buffer to PTY)
+fleetsh -g runners -c "node app.js" --tty
+```
+
+**Trade-offs:**
+
+- **stdout/stderr merge** — PTY combines stdout and stderr into a single stream. The distinction between `*` (stdout) and `!` (stderr) lines in the output is no longer reliable.
+- **ANSI escape codes** — Some programs emit color or control codes when a TTY is detected. To suppress, pass `-o RequestTTY=no` via the inventory SSH args or use `TERM=dumb`.
+- **Carriage returns** — PTY output may include `\r\n` line endings. fleetsh strips trailing `\r` automatically.
 
 ## Fail Fast
 
