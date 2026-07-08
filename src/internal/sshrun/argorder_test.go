@@ -110,6 +110,124 @@ func TestSCPArgNoUser(t *testing.T) {
 	}
 }
 
+func TestSSHArgs_TTY(t *testing.T) {
+	// TTY=true: first element must be "-tt"
+	hcTrue := HostConfig{Hostname: "h1", Username: "admin", TTY: true}
+	argsTrue := sshArgs(hcTrue)
+	require.NotEmpty(t, argsTrue)
+	assert.Equal(t, "-tt", argsTrue[0], "-tt must be first argument when TTY=true")
+
+	// TTY=false: no "-tt" anywhere
+	hcFalse := HostConfig{Hostname: "h1", Username: "admin", TTY: false}
+	argsFalse := sshArgs(hcFalse)
+	assert.NotContains(t, argsFalse, "-tt", "-tt must not appear when TTY=false")
+
+	// Zero value: no "-tt" anywhere
+	hcZero := HostConfig{Hostname: "h1", Username: "admin"}
+	argsZero := sshArgs(hcZero)
+	assert.NotContains(t, argsZero, "-tt", "-tt must not appear when TTY is zero value")
+}
+
+func TestSSHArgs_TTYWithPort(t *testing.T) {
+	hc := HostConfig{Hostname: "h1", Port: 2222, Username: "admin", TTY: true}
+	args := sshArgs(hc)
+	require.NotEmpty(t, args)
+	assert.Equal(t, "-tt", args[0], "-tt must be first argument")
+
+	// -tt must precede -p
+	ttIdx := -1
+	portIdx := -1
+	for i, a := range args {
+		if a == "-tt" {
+			ttIdx = i
+		}
+		if a == "-p" {
+			portIdx = i
+		}
+	}
+	require.NotEqual(t, -1, ttIdx, "-tt must be present")
+	require.NotEqual(t, -1, portIdx, "-p must be present")
+	assert.Less(t, ttIdx, portIdx, "-tt must precede -p")
+}
+
+func TestSSHArgs_TTYWithSSHArgs(t *testing.T) {
+	hc := HostConfig{Hostname: "h1", Username: "admin", TTY: true, SSHArgs: []string{"-i", "/key.pem"}}
+	args := sshArgs(hc)
+	require.NotEmpty(t, args)
+	assert.Equal(t, "-tt", args[0], "-tt must be first argument")
+
+	// -tt must precede SSH args
+	ttIdx := -1
+	keyIdx := -1
+	for i, a := range args {
+		if a == "-tt" {
+			ttIdx = i
+		}
+		if a == "-i" {
+			keyIdx = i
+		}
+	}
+	require.NotEqual(t, -1, ttIdx, "-tt must be present")
+	require.NotEqual(t, -1, keyIdx, "-i must be present")
+	assert.Less(t, ttIdx, keyIdx, "-tt must precede -i")
+}
+
+func TestSCPArgs_NoTTY(t *testing.T) {
+	// scpArgs must never include -tt even when TTY is true
+	hc := HostConfig{Hostname: "h1", Username: "admin", TTY: true}
+	args := scpArgs(hc, "/local/x", "/tmp/r")
+	assert.NotContains(t, args, "-tt", "scpArgs must never include -tt")
+}
+
+func TestEmitLine_StripsCarriageReturn(t *testing.T) {
+	ch := make(chan StreamEvent, 8)
+
+	// Case 1: trailing \r is stripped
+	emitLine(ch, "h1", false, []byte("hello world\r"), false)
+	require.Len(t, ch, 1)
+	ev := <-ch
+	assert.Equal(t, "hello world", ev.Line)
+	assert.False(t, ev.Stderr)
+
+	// Case 2: no \r → unchanged
+	emitLine(ch, "h1", false, []byte("no cr"), false)
+	require.Len(t, ch, 1)
+	ev = <-ch
+	assert.Equal(t, "no cr", ev.Line)
+
+	// Case 3: embedded \r\n preserved, only trailing \r stripped
+	emitLine(ch, "h1", false, []byte("mixed\r\nstill\r"), false)
+	require.Len(t, ch, 1)
+	ev = <-ch
+	assert.Equal(t, "mixed\r\nstill", ev.Line)
+
+	// Case 4: only \r → empty after strip → no event emitted
+	emitLine(ch, "h1", false, []byte("\r"), false)
+	assert.Len(t, ch, 0, "no event should be emitted for bare \\r")
+
+	// Case 5: truncated + trailing \r → stripped before marker
+	emitLine(ch, "h1", false, []byte("truncated line\r"), true)
+	require.Len(t, ch, 1)
+	ev = <-ch
+	assert.Equal(t, "truncated line (truncated)", ev.Line)
+}
+
+func TestStreamReader_StripsTrailingCR(t *testing.T) {
+	input := "line1\r\nline2\r\nline3\r\n"
+	ch := make(chan StreamEvent, 8)
+
+	go func() {
+		streamReader(strings.NewReader(input), ch, "h1", false, false)
+		close(ch)
+	}()
+
+	events := drainChannel(ch)
+	require.Len(t, events, 3)
+	assert.Equal(t, "line1", events[0].Line)
+	assert.Equal(t, "line2", events[1].Line)
+	assert.Equal(t, "line3", events[2].Line)
+}
+
 func TestShellSingleQuote(t *testing.T) {
 	tests := []struct {
 		in   string

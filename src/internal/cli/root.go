@@ -50,6 +50,7 @@ var (
 	flagJSON      bool
 	flagFailFast  bool
 	flagNoTrunc   bool
+	flagTTY       bool
 )
 
 // exitError carries a specific process exit code from runE up to Execute,
@@ -115,6 +116,7 @@ func buildRootCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&flagFailFast, "fail-fast", false, "stop scheduling new hosts after first failure")
 	cmd.Flags().BoolVar(&flagDryRun, "dry-run", false, "print what would run without connecting")
 	cmd.Flags().BoolVar(&flagNoTrunc, "no-trunc", false, "disable output line truncation")
+	cmd.Flags().BoolVarP(&flagTTY, "tty", "T", false, "allocate a pseudo-TTY for real-time output streaming")
 	cmd.Flags().IntVarP(&flagPing, "ping", "p", 0, "ping hosts (default: 3) (mutually exclusive with -c, -s)")
 	cmd.Flags().Bool("help", false, "help for fleetsh")
 
@@ -237,7 +239,7 @@ func runE(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	tasks := sshrun.BuildTasks(hosts, command, scriptContent, time.Duration(flagTimeout)*time.Millisecond, isScript)
+	tasks := sshrun.BuildTasks(hosts, command, scriptContent, time.Duration(flagTimeout)*time.Millisecond, isScript, flagTTY)
 
 	start := time.Now()
 
@@ -258,7 +260,7 @@ func runE(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	runner := sshrun.NewRunner(flagParallel, flagFailFast, flagDryRun, flagNoTrunc)
+	runner := sshrun.NewRunner(flagParallel, flagFailFast, flagDryRun, flagNoTrunc, flagTTY)
 	events := runner.Stream(context.Background(), tasks)
 
 	var results []*sshrun.Result

@@ -112,16 +112,20 @@ func StreamText(w io.Writer, version string, warning string, events <-chan sshru
 			} else {
 				fmt.Fprintf(bw, "%s | exit=%d duration=%s\n", align(ev.Host), ev.ExitCode, formatDuration(ev.Duration))
 			}
+			bw.Flush()
 		} else if ev.Error != "" {
 			fmt.Fprintf(bw, "%s ! %s\n", align(ev.Host), ev.Error)
+			bw.Flush()
 		} else if ev.Stderr {
 			fmt.Fprintf(bw, "%s ! %s\n", align(ev.Host), ev.Line)
 			accum.stderr.WriteString(ev.Line)
 			accum.stderr.WriteByte('\n')
+			bw.Flush()
 		} else {
 			fmt.Fprintf(bw, "%s * %s\n", align(ev.Host), ev.Line)
 			accum.stdout.WriteString(ev.Line)
 			accum.stdout.WriteByte('\n')
+			bw.Flush()
 		}
 	}
 
@@ -227,6 +231,7 @@ func StreamJSON(w io.Writer, version string, warning string, events <-chan sshru
 				Error:      ev.Error,
 				DurationMs: ev.Duration.Milliseconds(),
 			})
+			bw.Flush()
 		} else if ev.Error != "" {
 			encoder.Encode(ndjsonEvent{
 				Source: "host",
@@ -235,6 +240,7 @@ func StreamJSON(w io.Writer, version string, warning string, events <-chan sshru
 				Type:   "error",
 				Error:  ev.Error,
 			})
+			bw.Flush()
 		} else if ev.Stderr {
 			accum.stderr.WriteString(ev.Line)
 			accum.stderr.WriteByte('\n')
@@ -245,6 +251,7 @@ func StreamJSON(w io.Writer, version string, warning string, events <-chan sshru
 				Type:   "stderr",
 				Line:   ev.Line,
 			})
+			bw.Flush()
 		} else {
 			accum.stdout.WriteString(ev.Line)
 			accum.stdout.WriteByte('\n')
@@ -255,6 +262,7 @@ func StreamJSON(w io.Writer, version string, warning string, events <-chan sshru
 				Type:   "stdout",
 				Line:   ev.Line,
 			})
+			bw.Flush()
 		}
 	}
 

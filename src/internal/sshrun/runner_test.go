@@ -28,12 +28,13 @@ import (
 )
 
 func TestNewRunner(t *testing.T) {
-	r := NewRunner(5, true, false, true)
+	r := NewRunner(5, true, false, true, true)
 
 	assert.Equal(t, 5, r.Parallel)
 	assert.True(t, r.FailFast)
 	assert.False(t, r.DryRun)
 	assert.True(t, r.NoTrunc)
+	assert.True(t, r.TTY)
 }
 
 func TestBuildTasks_CommandMode(t *testing.T) {
@@ -45,7 +46,7 @@ func TestBuildTasks_CommandMode(t *testing.T) {
 	}
 
 	timeout := 30 * time.Second
-	tasks := BuildTasks(hosts, "uptime", nil, timeout, false)
+	tasks := BuildTasks(hosts, "uptime", nil, timeout, false, false)
 
 	require.Len(t, tasks, 1)
 	task := tasks[0]
@@ -71,7 +72,7 @@ func TestBuildTasks_ScriptMode(t *testing.T) {
 
 	script := []byte("#!/bin/sh\necho hello")
 	timeout := 60 * time.Second
-	tasks := BuildTasks(hosts, "", script, timeout, true)
+	tasks := BuildTasks(hosts, "", script, timeout, true, false)
 
 	require.Len(t, tasks, 1)
 	task := tasks[0]
@@ -82,7 +83,7 @@ func TestBuildTasks_ScriptMode(t *testing.T) {
 }
 
 func TestBuildTasks_EmptyHosts(t *testing.T) {
-	tasks := BuildTasks(nil, "cmd", nil, time.Second, false)
+	tasks := BuildTasks(nil, "cmd", nil, time.Second, false, false)
 
 	assert.NotNil(t, tasks)
 	assert.Empty(t, tasks)
@@ -95,7 +96,7 @@ func TestBuildTasks_MultipleHosts(t *testing.T) {
 		{Host: &inventory.Host{Name: "h3", Alias: "a3"}, Group: "g3"},
 	}
 
-	tasks := BuildTasks(hosts, "date", nil, 10*time.Second, false)
+	tasks := BuildTasks(hosts, "date", nil, 10*time.Second, false, false)
 
 	assert.Len(t, tasks, 3)
 	for i, task := range tasks {
@@ -113,7 +114,7 @@ func TestBuildTasks_DefaultUser_WhenHostHasNoUser(t *testing.T) {
 		{Host: &inventory.Host{Name: "h2", User: ""}},  // explicit empty User
 	}
 
-	tasks := BuildTasks(hosts, "echo ok", nil, 5*time.Second, false)
+	tasks := BuildTasks(hosts, "echo ok", nil, 5*time.Second, false, false)
 
 	assert.Len(t, tasks, 2)
 	assert.Equal(t, currentUser.Username, tasks[0].HostConfig.Username)
@@ -125,7 +126,7 @@ func TestBuildTasks_HostUserOverridesDefault(t *testing.T) {
 		{Host: &inventory.Host{Name: "h1", User: "customuser"}},
 	}
 
-	tasks := BuildTasks(hosts, "id", nil, time.Second, false)
+	tasks := BuildTasks(hosts, "id", nil, time.Second, false, false)
 
 	assert.Len(t, tasks, 1)
 	assert.Equal(t, "customuser", tasks[0].HostConfig.Username)
@@ -136,7 +137,7 @@ func TestBuildTasks_SSHArgs(t *testing.T) {
 		{Host: &inventory.Host{Name: "h1", SSHArgs: []string{"-i", "/key.pem", "-o", "StrictHostKeyChecking=no"}}},
 	}
 
-	tasks := BuildTasks(hosts, "ls", nil, time.Second, false)
+	tasks := BuildTasks(hosts, "ls", nil, time.Second, false, false)
 
 	assert.Len(t, tasks, 1)
 	assert.Equal(t, []string{"-i", "/key.pem", "-o", "StrictHostKeyChecking=no"}, tasks[0].HostConfig.SSHArgs)
@@ -147,7 +148,7 @@ func TestBuildTasks_NilSSHArgs(t *testing.T) {
 		{Host: &inventory.Host{Name: "h1"}},
 	}
 
-	tasks := BuildTasks(hosts, "ls", nil, time.Second, false)
+	tasks := BuildTasks(hosts, "ls", nil, time.Second, false, false)
 
 	assert.Len(t, tasks, 1)
 	assert.Nil(t, tasks[0].HostConfig.SSHArgs)
@@ -158,7 +159,7 @@ func TestBuildTasks_ZeroPort(t *testing.T) {
 		{Host: &inventory.Host{Name: "h1", Port: 0}},
 	}
 
-	tasks := BuildTasks(hosts, "cmd", nil, time.Second, false)
+	tasks := BuildTasks(hosts, "cmd", nil, time.Second, false, false)
 
 	assert.Len(t, tasks, 1)
 	assert.Equal(t, 0, tasks[0].HostConfig.Port)
@@ -169,7 +170,7 @@ func TestBuildTasks_NonZeroPort(t *testing.T) {
 		{Host: &inventory.Host{Name: "h1", Port: 2222}},
 	}
 
-	tasks := BuildTasks(hosts, "cmd", nil, time.Second, false)
+	tasks := BuildTasks(hosts, "cmd", nil, time.Second, false, false)
 
 	assert.Len(t, tasks, 1)
 	assert.Equal(t, 2222, tasks[0].HostConfig.Port)
@@ -359,8 +360,29 @@ func TestDryRunStream_MixedModeLabels(t *testing.T) {
 	assert.NotContains(t, line, "Mode: script")
 }
 
+func TestBuildTasks_TTY(t *testing.T) {
+	hosts := []*inventory.ResolvedHost{
+		{Host: &inventory.Host{Name: "h1", Alias: "a1"}, Group: "g1"},
+		{Host: &inventory.Host{Name: "h2", Alias: "a2"}, Group: "g2"},
+	}
+
+	// tty=true: all tasks have TTY=true
+	tasks := BuildTasks(hosts, "cmd", nil, time.Second, false, true)
+	assert.Len(t, tasks, 2)
+	for i, task := range tasks {
+		assert.True(t, task.HostConfig.TTY, "task %d should have TTY=true", i)
+	}
+
+	// tty=false: all tasks have TTY=false
+	tasks = BuildTasks(hosts, "cmd", nil, time.Second, false, false)
+	assert.Len(t, tasks, 2)
+	for i, task := range tasks {
+		assert.False(t, task.HostConfig.TTY, "task %d should have TTY=false", i)
+	}
+}
+
 func TestStream_DryRun(t *testing.T) {
-	r := NewRunner(1, false, true, false)
+	r := NewRunner(1, false, true, false, false)
 	tasks := []Task{
 		makeTask("web", "prod", "uptime", false),
 		makeTask("db", "staging", "", true),
@@ -389,7 +411,7 @@ func TestStream_DryRun(t *testing.T) {
 }
 
 func TestStream_DryRunEmpty(t *testing.T) {
-	r := NewRunner(4, false, true, false)
+	r := NewRunner(4, false, true, false, false)
 
 	ch := r.Stream(context.Background(), nil)
 

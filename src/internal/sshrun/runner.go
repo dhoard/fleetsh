@@ -42,14 +42,16 @@ type Runner struct {
 	FailFast bool
 	DryRun   bool
 	NoTrunc  bool
+	TTY      bool
 }
 
-func NewRunner(parallel int, failFast bool, dryRun bool, noTrunc bool) *Runner {
+func NewRunner(parallel int, failFast bool, dryRun bool, noTrunc bool, tty bool) *Runner {
 	return &Runner{
 		Parallel: parallel,
 		FailFast: failFast,
 		DryRun:   dryRun,
 		NoTrunc:  noTrunc,
+		TTY:      tty,
 	}
 }
 
@@ -121,7 +123,7 @@ func (r *Runner) dryRunStream(ch chan<- StreamEvent, tasks []Task) {
 	}
 }
 
-func BuildTasks(hosts []*inventory.ResolvedHost, command string, script []byte, timeout time.Duration, isScript bool) []Task {
+func BuildTasks(hosts []*inventory.ResolvedHost, command string, script []byte, timeout time.Duration, isScript bool, tty bool) []Task {
 	tasks := make([]Task, len(hosts))
 
 	defaultUser := ""
@@ -141,6 +143,7 @@ func BuildTasks(hosts []*inventory.ResolvedHost, command string, script []byte, 
 			Port:     rh.Host.Port,
 			Username: username,
 			SSHArgs:  rh.Host.SSHArgs,
+			TTY:      tty,
 		}
 
 		tasks[i] = Task{
